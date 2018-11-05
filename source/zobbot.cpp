@@ -4,295 +4,275 @@
 using namespace BWAPI;
 using namespace Filter;
 
-void ExampleAIModule::onStart()
+bool CAgent::IsActive()
 {
-  // Hello World!
-  Broodwar->sendText("Hello world!");
+	if (_Unit->isLockedDown() || _Unit->isMaelstrommed() || _Unit->isStasised())
+		return false;
 
-  // Print the map name.
-  // BWAPI returns std::string when retrieving a string, don't forget to add .c_str() when printing!
-  Broodwar << "The map is " << Broodwar->mapName() << "!" << std::endl;
+	if (_Unit->isLoaded() || !_Unit->isPowered() || _Unit->isStuck())
+		return false;
 
-  // Enable the UserInput flag, which allows us to control the bot and type messages.
-  Broodwar->enableFlag(Flag::UserInput);
+	if (!_Unit->isCompleted() || _Unit->isConstructing())
+		return false;
 
-  // Uncomment the following line and the bot will know about everything through the fog of war (cheat).
-  //Broodwar->enableFlag(Flag::CompleteMapInformation);
-
-  // Set the command optimization level so that common commands can be grouped
-  // and reduce the bot's APM (Actions Per Minute).
-  Broodwar->setCommandOptimizationLevel(2);
-
-  // Check if this is a replay
-  if ( Broodwar->isReplay() )
-  {
-
-    // Announce the players in the replay
-    Broodwar << "The following players are in this replay:" << std::endl;
-    
-    // Iterate all the players in the game using a std:: iterator
-    Playerset players = Broodwar->getPlayers();
-    for(auto p : players)
-    {
-      // Only print the player if they are not an observer
-      if ( !p->isObserver() )
-        Broodwar << p->getName() << ", playing as " << p->getRace() << std::endl;
-    }
-
-  }
-  else // if this is not a replay
-  {
-    // Retrieve you and your enemy's races. enemy() will just return the first enemy.
-    // If you wish to deal with multiple enemies then you must use enemies().
-    if ( Broodwar->enemy() ) // First make sure there is an enemy
-      Broodwar << "The matchup is " << Broodwar->self()->getRace() << " vs " << Broodwar->enemy()->getRace() << std::endl;
-  }
-
+	return true;
 }
 
-void ExampleAIModule::onEnd(bool isWinner)
-{
-  // Called when the game ends
-  if ( isWinner )
-  {
-    // Log your win here!
-  }
-}
-
-void ExampleAIModule::onFrame()
-{
-  // Called once every game frame
-
-  // Display the game frame rate as text in the upper left area of the screen
-  Broodwar->drawTextScreen(200, 0,  "FPS: %d", Broodwar->getFPS() );
-  Broodwar->drawTextScreen(200, 20, "Average FPS: %f", Broodwar->getAverageFPS() );
-
-  // Return if the game is a replay or is paused
-  if ( Broodwar->isReplay() || Broodwar->isPaused() || !Broodwar->self() )
-    return;
-
-  // Prevent spamming by only running our onFrame once every number of latency frames.
-  // Latency frames are the number of frames before commands are processed.
-  if ( Broodwar->getFrameCount() % Broodwar->getLatencyFrames() != 0 )
-    return;
-
-  // Iterate through all the units that we own
-  for (auto &u : Broodwar->self()->getUnits())
-  {
-    // Ignore the unit if it no longer exists
-    // Make sure to include this block when handling any Unit pointer!
-    if ( !u->exists() )
-      continue;
-
-    // Ignore the unit if it has one of the following status ailments
-    if ( u->isLockedDown() || u->isMaelstrommed() || u->isStasised() )
-      continue;
-
-    // Ignore the unit if it is in one of the following states
-    if ( u->isLoaded() || !u->isPowered() || u->isStuck() )
-      continue;
-
-    // Ignore the unit if it is incomplete or busy constructing
-    if ( !u->isCompleted() || u->isConstructing() )
-      continue;
-
-
-    // Finally make the unit do some stuff!
-
-
-    // If the unit is a worker unit
-    if ( u->getType().isWorker() )
-    {
-      // if our worker is idle
-      if ( u->isIdle() )
-      {
-        // Order workers carrying a resource to return them to the center,
-        // otherwise find a mineral patch to harvest.
-        if ( u->isCarryingGas() || u->isCarryingMinerals() )
-        {
-          u->returnCargo();
-        }
-        else if ( !u->getPowerUp() )  // The worker cannot harvest anything if it
-        {                             // is carrying a powerup such as a flag
-          // Harvest from the nearest mineral patch or gas refinery
-          if ( !u->gather( u->getClosestUnit( IsMineralField || IsRefinery )) )
-          {
-            // If the call fails, then print the last error message
-            Broodwar << Broodwar->getLastError() << std::endl;
-          }
-
-        } // closure: has no powerup
-      } // closure: if idle
-
-    }
-    else if ( u->getType().isResourceDepot() ) // A resource depot is a Command Center, Nexus, or Hatchery
-    {
-
-      // Order the depot to construct more workers! But only when it is idle.
-      if ( u->isIdle() && !u->train(u->getType().getRace().getWorker()) )
-      {
-        // If that fails, draw the error at the location so that you can visibly see what went wrong!
-        // However, drawing the error once will only appear for a single frame
-        // so create an event that keeps it on the screen for some frames
-        Position pos = u->getPosition();
-        Error lastErr = Broodwar->getLastError();
-        Broodwar->registerEvent([pos,lastErr](Game*){ Broodwar->drawTextMap(pos, "%c%s", Text::White, lastErr.c_str()); },   // action
-                                nullptr,    // condition
-                                Broodwar->getLatencyFrames());  // frames to run
-
-        // Retrieve the supply provider type in the case that we have run out of supplies
-        UnitType supplyProviderType = u->getType().getRace().getSupplyProvider();
-        static int lastChecked = 0;
-
-        // If we are supply blocked and haven't tried constructing more recently
-        if (  lastErr == Errors::Insufficient_Supply &&
-              lastChecked + 400 < Broodwar->getFrameCount() &&
-              Broodwar->self()->incompleteUnitCount(supplyProviderType) == 0 )
-        {
-          lastChecked = Broodwar->getFrameCount();
-
-          // Retrieve a unit that is capable of constructing the supply needed
-          Unit supplyBuilder = u->getClosestUnit(  GetType == supplyProviderType.whatBuilds().first &&
-                                                    (IsIdle || IsGatheringMinerals) &&
-                                                    IsOwned);
-          // If a unit was found
-          if ( supplyBuilder )
-          {
-            if ( supplyProviderType.isBuilding() )
-            {
-              TilePosition targetBuildLocation = Broodwar->getBuildLocation(supplyProviderType, supplyBuilder->getTilePosition());
-              if ( targetBuildLocation )
-              {
-                // Register an event that draws the target build location
-                Broodwar->registerEvent([targetBuildLocation,supplyProviderType](Game*)
-                                        {
-                                          Broodwar->drawBoxMap( Position(targetBuildLocation),
-                                                                Position(targetBuildLocation + supplyProviderType.tileSize()),
-                                                                Colors::Blue);
-                                        },
-                                        nullptr,  // condition
-                                        supplyProviderType.buildTime() + 100 );  // frames to run
-
-                // Order the builder to construct the supply structure
-                supplyBuilder->build( supplyProviderType, targetBuildLocation );
-              }
-            }
-            else
-            {
-              // Train the supply provider (Overlord) if the provider is not a structure
-              supplyBuilder->train( supplyProviderType );
-            }
-          } // closure: supplyBuilder is valid
-        } // closure: insufficient supply
-      } // closure: failed to train idle unit
-
-    }
-
-  } // closure: unit iterator
-}
-
-void ExampleAIModule::onSendText(std::string text)
+void CProbe::DoAction()
 {
 
-  // Send the text to the game if it is not being processed.
-  Broodwar->sendText("%s", text.c_str());
-
-
-  // Make sure to use %s and pass the text as a parameter,
-  // otherwise you may run into problems when you use the %(percent) character!
-
+	if (_Unit->isIdle() )
+	{
+		if (_Unit->isCarryingGas() || _Unit->isCarryingMinerals())
+		{
+			_Unit->returnCargo();
+		}
+		else
+		{
+			if (!_Unit->gather(_Unit->getClosestUnit(IsMineralField || IsRefinery)))
+			{
+				Broodwar << Broodwar->getLastError() << std::endl;
+			}
+		}
+	}
 }
 
-void ExampleAIModule::onReceiveText(BWAPI::Player player, std::string text)
+void CNexus::DoAction()
 {
-  // Parse the received text
-  Broodwar << player->getName() << " said \"" << text << "\"" << std::endl;
+	if (_Unit->isIdle() && !_Unit->train(_Unit->getType().getRace().getWorker()))
+	{
+		Position pos = _Unit->getPosition();
+		Error lastErr = Broodwar->getLastError();
+		Broodwar->registerEvent([pos, lastErr](Game*) { Broodwar->drawTextMap(pos, "%c%s", Text::White, lastErr.c_str()); }, nullptr, Broodwar->getLatencyFrames());
+	
+		UnitType supplyProviderType = _Unit->getType().getRace().getSupplyProvider();
+		static int lastChecked = 0;
+	
+		if (lastErr == Errors::Insufficient_Supply &&
+			lastChecked + 400 < Broodwar->getFrameCount() &&
+			Broodwar->self()->incompleteUnitCount(supplyProviderType) == 0)
+		{
+			lastChecked = Broodwar->getFrameCount();
+	
+			Unit supplyBuilder = _Unit->getClosestUnit(GetType == supplyProviderType.whatBuilds().first &&
+				(IsIdle || IsGatheringMinerals) &&
+				IsOwned);
+	
+			if (supplyBuilder)
+			{
+				if (supplyProviderType.isBuilding())
+				{
+					TilePosition targetBuildLocation = Broodwar->getBuildLocation(supplyProviderType, supplyBuilder->getTilePosition());
+					if (targetBuildLocation)
+					{
+						Broodwar->registerEvent([targetBuildLocation, supplyProviderType](Game*)
+						{
+							Broodwar->drawBoxMap(Position(targetBuildLocation), Position(targetBuildLocation + supplyProviderType.tileSize()), Colors::Blue);
+						}, nullptr, supplyProviderType.buildTime() + 100);
+	
+						supplyBuilder->build(supplyProviderType, targetBuildLocation);
+					}
+				}
+				else
+				{
+					supplyBuilder->train(supplyProviderType);
+				}
+			}
+		}
+	}
 }
 
-void ExampleAIModule::onPlayerLeft(BWAPI::Player player)
+void CTactician::Update()
 {
-  // Interact verbally with the other players in the game by
-  // announcing that the other player has left.
-  Broodwar->sendText("Goodbye %s!", player->getName().c_str());
+	_AgentManager.RefreshAgents();
+	_AgentManager.DoActions();
 }
 
-void ExampleAIModule::onNukeDetect(BWAPI::Position target)
+void CAgentManager::RefreshAgents()
 {
-
-  // Check if the target is a valid position
-  if ( target )
-  {
-    // if so, print the location of the nuclear strike target
-    Broodwar << "Nuclear Launch Detected at " << target << std::endl;
-  }
-  else 
-  {
-    // Otherwise, ask other players where the nuke is!
-    Broodwar->sendText("Where's the nuke?");
-  }
-
-  // You can also retrieve all the nuclear missile targets using Broodwar->getNukeDots()!
+	for (const BWAPI::Unit& Unit : Broodwar->self()->getUnits())
+	{
+		RefreshAgent( Unit );
+	}
 }
 
-void ExampleAIModule::onUnitDiscover(BWAPI::Unit unit)
+void CAgentManager::DoActions()
+{
+	for (auto It : _AllAgents)
+	{
+		if (!It.second->IsActive())
+			continue;
+
+		It.second->DoAction();
+	}
+}
+
+void CAgentManager::RemoveAgent(const BWAPI::Unit Unit)
+{
+	int Id = Unit->getID();
+
+	//Broodwar->sendText("Removing agent with Id = %d", Id);
+
+	RemoveAgent(_AllAgents, Id);
+
+	if (Unit->getType().isWorker())
+	{
+		RemoveAgent(_Workers, Id);
+	}
+	else if (Unit->getType().isResourceDepot())
+	{
+		RemoveAgent(_Nexuses, Id);
+	}
+}
+
+void CAgentManager::RefreshAgent(const BWAPI::Unit Unit)
+{
+	if (Unit->getType().isWorker())
+	{
+		SetAgent( _Workers, Unit );
+	}
+	else if (Unit->getType().isResourceDepot())
+	{
+		SetAgent( _Nexuses, Unit );
+	}
+	else
+	{
+		//Broodwar->sendText("Zobbot: Could not identify agent");
+	}
+}
+
+void CZobbot::onStart()
+{
+	Broodwar->sendText("*static voice*: ZOBOOT ACTIVATEEED");
+	Broodwar << "The map is " << Broodwar->mapName() << "!" << std::endl;
+	Broodwar->enableFlag(Flag::UserInput);
+	Broodwar->setCommandOptimizationLevel(2);
+
+	if (Broodwar->isReplay())
+	{
+		Broodwar << "The following players are in this replay:" << std::endl;
+
+		Playerset players = Broodwar->getPlayers();
+		for (auto p : players)
+		{
+			if (!p->isObserver())
+				Broodwar << p->getName() << ", playing as " << p->getRace() << std::endl;
+		}
+	}
+	else
+	{
+		if (Broodwar->enemy())
+			Broodwar << "The matchup is " << Broodwar->self()->getRace() << " vs " << Broodwar->enemy()->getRace() << std::endl;
+	}
+}
+
+void CZobbot::onEnd(bool isWinner)
+{
+	if (isWinner)
+	{
+	}
+}
+
+void CZobbot::onFrame()
+{
+	Broodwar->drawTextScreen(200, 0, "FPS: %d", Broodwar->getFPS());
+	//Broodwar->drawTextScreen(200, 20, "Average FPS: %f", Broodwar->getAverageFPS());
+	Broodwar->drawTextScreen(200, 20, "APM: %d", Broodwar->getAPM());
+
+	if (Broodwar->isReplay() || Broodwar->isPaused() || !Broodwar->self())
+		return;
+
+	if (Broodwar->getFrameCount() % Broodwar->getLatencyFrames() != 0)
+		return;
+
+	_Tactician.Update();
+}
+
+void CZobbot::onSendText(std::string text)
+{
+	Broodwar->sendText("%s", text.c_str());
+}
+
+void CZobbot::onReceiveText(BWAPI::Player player, std::string text)
+{
+	Broodwar << player->getName() << " said \"" << text << "\"" << std::endl;
+}
+
+void CZobbot::onPlayerLeft(BWAPI::Player player)
+{
+	Broodwar->sendText("Goodbye %s!", player->getName().c_str());
+}
+
+void CZobbot::onNukeDetect(BWAPI::Position target)
+{
+	if (target)
+	{
+		Broodwar << "Nuclear Launch Detected at " << target << std::endl;
+	}
+	else
+	{
+		Broodwar->sendText("Where's the nuke?");
+	}
+}
+
+void CZobbot::onUnitDiscover(BWAPI::Unit unit)
 {
 }
 
-void ExampleAIModule::onUnitEvade(BWAPI::Unit unit)
+void CZobbot::onUnitEvade(BWAPI::Unit unit)
 {
 }
 
-void ExampleAIModule::onUnitShow(BWAPI::Unit unit)
+void CZobbot::onUnitShow(BWAPI::Unit unit)
 {
 }
 
-void ExampleAIModule::onUnitHide(BWAPI::Unit unit)
+void CZobbot::onUnitHide(BWAPI::Unit unit)
 {
 }
 
-void ExampleAIModule::onUnitCreate(BWAPI::Unit unit)
+void CZobbot::onUnitCreate(BWAPI::Unit unit)
 {
-  if ( Broodwar->isReplay() )
-  {
-    // if we are in a replay, then we will print out the build order of the structures
-    if ( unit->getType().isBuilding() && !unit->getPlayer()->isNeutral() )
-    {
-      int seconds = Broodwar->getFrameCount()/24;
-      int minutes = seconds/60;
-      seconds %= 60;
-      Broodwar->sendText("%.2d:%.2d: %s creates a %s", minutes, seconds, unit->getPlayer()->getName().c_str(), unit->getType().c_str());
-    }
-  }
+	if (Broodwar->isReplay())
+	{
+		if (unit->getType().isBuilding() && !unit->getPlayer()->isNeutral())
+		{
+			int seconds = Broodwar->getFrameCount() / 24;
+			int minutes = seconds / 60;
+			seconds %= 60;
+			Broodwar->sendText("%.2d:%.2d: %s creates a %s", minutes, seconds, unit->getPlayer()->getName().c_str(), unit->getType().c_str());
+		}
+	}
 }
 
-void ExampleAIModule::onUnitDestroy(BWAPI::Unit unit)
+void CZobbot::onUnitDestroy(BWAPI::Unit Unit)
+{
+	_Tactician.GetAgentManager().RemoveAgent( Unit );
+}
+
+void CZobbot::onUnitMorph(BWAPI::Unit Unit)
+{
+	if (Broodwar->isReplay())
+	{
+		if (Unit->getType().isBuilding() && !Unit->getPlayer()->isNeutral())
+		{
+			int seconds = Broodwar->getFrameCount() / 24;
+			int minutes = seconds / 60;
+			seconds %= 60;
+			Broodwar->sendText("%.2d:%.2d: %s morphs a %s", minutes, seconds, Unit->getPlayer()->getName().c_str(), Unit->getType().c_str());
+		}
+	}
+}
+
+void CZobbot::onUnitRenegade(BWAPI::Unit unit)
 {
 }
 
-void ExampleAIModule::onUnitMorph(BWAPI::Unit unit)
+void CZobbot::onSaveGame(std::string gameName)
 {
-  if ( Broodwar->isReplay() )
-  {
-    // if we are in a replay, then we will print out the build order of the structures
-    if ( unit->getType().isBuilding() && !unit->getPlayer()->isNeutral() )
-    {
-      int seconds = Broodwar->getFrameCount()/24;
-      int minutes = seconds/60;
-      seconds %= 60;
-      Broodwar->sendText("%.2d:%.2d: %s morphs a %s", minutes, seconds, unit->getPlayer()->getName().c_str(), unit->getType().c_str());
-    }
-  }
+	Broodwar << "The game was saved to \"" << gameName << "\"" << std::endl;
 }
 
-void ExampleAIModule::onUnitRenegade(BWAPI::Unit unit)
-{
-}
-
-void ExampleAIModule::onSaveGame(std::string gameName)
-{
-  Broodwar << "The game was saved to \"" << gameName << "\"" << std::endl;
-}
-
-void ExampleAIModule::onUnitComplete(BWAPI::Unit unit)
+void CZobbot::onUnitComplete(BWAPI::Unit unit)
 {
 }

@@ -4,6 +4,14 @@
 using namespace BWAPI;
 using namespace Filter;
 
+void CAgent::DoAction()
+{
+	if (_AgentStrategy)
+	{
+		_AgentStrategy->DoAction(this);
+	}
+}
+
 bool CAgent::IsActive()
 {
 	if (_Unit->isLockedDown() || _Unit->isMaelstrommed() || _Unit->isStasised())
@@ -18,18 +26,19 @@ bool CAgent::IsActive()
 	return true;
 }
 
-void CProbe::DoAction()
+void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 {
+	BWAPI::Unit Unit = pProbe->_Unit;
 
-	if (_Unit->isIdle() )
+	if (Unit->isIdle())
 	{
-		if (_Unit->isCarryingGas() || _Unit->isCarryingMinerals())
+		if (Unit->isCarryingGas() || Unit->isCarryingMinerals())
 		{
-			_Unit->returnCargo();
+			Unit->returnCargo();
 		}
 		else
 		{
-			if (!_Unit->gather(_Unit->getClosestUnit(IsMineralField || IsRefinery)))
+			if (!Unit->gather(Unit->getClosestUnit(IsMineralField || IsRefinery)))
 			{
 				Broodwar << Broodwar->getLastError() << std::endl;
 			}
@@ -37,55 +46,89 @@ void CProbe::DoAction()
 	}
 }
 
-void CNexus::DoAction()
+void CNexus::CBuildProbe::Do(CNexus* pNexus)
 {
-	if (_Unit->isIdle() && !_Unit->train(_Unit->getType().getRace().getWorker()))
+	BWAPI::Unit Unit = pNexus->_Unit;
+	if (Unit->isIdle() && !Unit->train(Unit->getType().getRace().getWorker()))
 	{
-		Position pos = _Unit->getPosition();
+		Position pos = Unit->getPosition();
 		Error lastErr = Broodwar->getLastError();
 		Broodwar->registerEvent([pos, lastErr](Game*) { Broodwar->drawTextMap(pos, "%c%s", Text::White, lastErr.c_str()); }, nullptr, Broodwar->getLatencyFrames());
-	
-		UnitType supplyProviderType = _Unit->getType().getRace().getSupplyProvider();
-		static int lastChecked = 0;
-	
-		if (lastErr == Errors::Insufficient_Supply &&
-			lastChecked + 400 < Broodwar->getFrameCount() &&
-			Broodwar->self()->incompleteUnitCount(supplyProviderType) == 0)
-		{
-			lastChecked = Broodwar->getFrameCount();
-	
-			Unit supplyBuilder = _Unit->getClosestUnit(GetType == supplyProviderType.whatBuilds().first &&
-				(IsIdle || IsGatheringMinerals) &&
-				IsOwned);
-	
-			if (supplyBuilder)
-			{
-				if (supplyProviderType.isBuilding())
-				{
-					TilePosition targetBuildLocation = Broodwar->getBuildLocation(supplyProviderType, supplyBuilder->getTilePosition());
-					if (targetBuildLocation)
-					{
-						Broodwar->registerEvent([targetBuildLocation, supplyProviderType](Game*)
-						{
-							Broodwar->drawBoxMap(Position(targetBuildLocation), Position(targetBuildLocation + supplyProviderType.tileSize()), Colors::Blue);
-						}, nullptr, supplyProviderType.buildTime() + 100);
-	
-						supplyBuilder->build(supplyProviderType, targetBuildLocation);
-					}
-				}
-				else
-				{
-					supplyBuilder->train(supplyProviderType);
-				}
-			}
-		}
 	}
 }
+
+
+//void CNexus::DoAction()
+//{
+//	if (_Unit->isIdle() && !_Unit->train(_Unit->getType().getRace().getWorker()))
+//	{
+//		Position pos = _Unit->getPosition();
+//		Error lastErr = Broodwar->getLastError();
+//		Broodwar->registerEvent([pos, lastErr](Game*) { Broodwar->drawTextMap(pos, "%c%s", Text::White, lastErr.c_str()); }, nullptr, Broodwar->getLatencyFrames());
+//	
+//		UnitType supplyProviderType = _Unit->getType().getRace().getSupplyProvider();
+//		static int lastChecked = 0;
+//	
+//		if (lastErr == Errors::Insufficient_Supply &&
+//			lastChecked + 400 < Broodwar->getFrameCount() &&
+//			Broodwar->self()->incompleteUnitCount(supplyProviderType) == 0)
+//		{
+//			lastChecked = Broodwar->getFrameCount();
+//	
+//			Unit supplyBuilder = _Unit->getClosestUnit(GetType == supplyProviderType.whatBuilds().first &&
+//				(IsIdle || IsGatheringMinerals) &&
+//				IsOwned);
+//	
+//			if (supplyBuilder)
+//			{
+//				if (supplyProviderType.isBuilding())
+//				{
+//					TilePosition targetBuildLocation = Broodwar->getBuildLocation(supplyProviderType, supplyBuilder->getTilePosition());
+//					if (targetBuildLocation)
+//					{
+//						Broodwar->registerEvent([targetBuildLocation, supplyProviderType](Game*)
+//						{
+//							Broodwar->drawBoxMap(Position(targetBuildLocation), Position(targetBuildLocation + supplyProviderType.tileSize()), Colors::Blue);
+//						}, nullptr, supplyProviderType.buildTime() + 100);
+//	
+//						supplyBuilder->build(supplyProviderType, targetBuildLocation);
+//					}
+//				}
+//				else
+//				{
+//					supplyBuilder->train(supplyProviderType);
+//				}
+//			}
+//		}
+//	}
+//}
 
 void CTactician::Update()
 {
 	_AgentManager.RefreshAgents();
+
+	SetProbeStrategies();
+
 	_AgentManager.DoActions();
+}
+
+void CTactician::SetProbeStrategies()
+{
+	// Assign gather to all probes that doesn't have a strategy
+	for (auto It : _AgentManager._Probes)
+	{
+		Agent<CProbe> Probe = It.second;
+		if (Probe && Probe->IsActive() && !Probe->HasStrategy() )
+		{
+			Agent<CNexus> Nexus = CAgentManager::AccessClosest( _AgentManager._Nexuses, Probe->_Unit->getPosition() );
+			if (Nexus)
+			{
+				Probe->SetStrategy<CProbe::CGatherStrategy>();
+			}
+			else
+				break;
+		}
+	}
 }
 
 void CAgentManager::RefreshAgents()
@@ -117,7 +160,7 @@ void CAgentManager::RemoveAgent(const BWAPI::Unit Unit)
 
 	if (Unit->getType().isWorker())
 	{
-		RemoveAgent(_Workers, Id);
+		RemoveAgent(_Probes, Id);
 	}
 	else if (Unit->getType().isResourceDepot())
 	{
@@ -129,7 +172,7 @@ void CAgentManager::RefreshAgent(const BWAPI::Unit Unit)
 {
 	if (Unit->getType().isWorker())
 	{
-		SetAgent( _Workers, Unit );
+		SetAgent( _Probes, Unit );
 	}
 	else if (Unit->getType().isResourceDepot())
 	{

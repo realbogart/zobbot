@@ -7,48 +7,102 @@ struct SCommand
 	float _Score = 0.0f;
 };
 
+class CAgentStrategyBase;
+
 class CAgent
 {
-	friend class CAgentManager;
-
 public:
-	CAgent(const BWAPI::Unit Unit)
+	CAgent(const BWAPI::Unit Unit, CAgentStrategyBase* pAgentStrategy = nullptr)
 		: _Unit( Unit )
+		, _AgentStrategy( pAgentStrategy )
 	{
 	}
 
-	virtual void DoAction() = 0;
+	virtual ~CAgent() {}
+
+	void DoAction();
 
 	bool IsActive();
 
-protected:
+	template<typename T, typename... Args>
+	void SetStrategy(Args... args)
+	{
+		BWAPI::Broodwar->sendText("Assigning strategy '%s' to id = %d", typeid(T).name(), _Unit->getID());
+		_AgentStrategy.reset( new T(args...) );
+	}
+
+	void ResetStrategy()
+	{
+		_AgentStrategy.release();
+	}
+
+	bool HasStrategy() { return _AgentStrategy != nullptr; }
+
 	BWAPI::Unit _Unit = nullptr;
+
+protected:
+	std::unique_ptr<CAgentStrategyBase> _AgentStrategy;
+};
+
+class CAgentStrategyBase
+{
+public:
+	virtual void DoAction(CAgent* pAgent) = 0;
+};
+
+template<typename T>
+class CAgentStrategy : public CAgentStrategyBase
+{
+public:
+	void DoAction(CAgent* pAgent) override
+	{
+		T* pAgentTyped = dynamic_cast<T*>(pAgent);
+
+		if (pAgentTyped)
+		{
+			Do(pAgentTyped);
+		}
+	}
+
+	virtual void Do(T* pAgent) = 0;
 };
 
 class CProbe : public CAgent
 {
 public:
+	class CGatherStrategy : public CAgentStrategy<CProbe>
+	{
+	public:
+		void Do(CProbe* pProbe);
+	};
+
 	CProbe(const BWAPI::Unit Unit)
 		: CAgent( Unit )
 	{
 	}
-
-	void DoAction() override;
 };
 
 class CNexus : public CAgent
 {
 public:
+	class CBuildProbe : public CAgentStrategy<CNexus>
+	{
+	public:
+		void Do(CNexus* pNexus);
+	};
+
 	CNexus(const BWAPI::Unit Unit)
 		: CAgent(Unit)
 	{
+		SetStrategy<CBuildProbe>();
 	}
-
-	void DoAction() override;
 };
 
 template<typename T>
-using AgentMap = std::unordered_map< int, std::shared_ptr<T> >;
+using Agent = std::shared_ptr<T>;
+
+template<typename T>
+using AgentMap = std::unordered_map< int, Agent<T> >;
 
 class CAgentManager
 {
@@ -57,6 +111,32 @@ public:
 	void DoActions();
 
 	void RemoveAgent(const BWAPI::Unit Unit);
+
+	template<typename T>
+	static Agent<T> AccessClosest(AgentMap<T>& Map, const BWAPI::Position& Position)
+	{
+		int Max = INT_MAX;
+		Agent<T> ClosestAgent = nullptr;
+		for (auto It : Map)
+		{
+			Agent<T> Current = std::dynamic_pointer_cast<T>( It.second );
+			if (Current)
+			{
+				int Distance = Current->_Unit->getDistance(Position);
+				if (Distance < Max)
+				{
+					Max = Distance;
+					ClosestAgent = Current;
+				}
+			}
+		}
+
+		return ClosestAgent;
+	}
+
+	AgentMap<CAgent> _AllAgents;
+	AgentMap<CProbe> _Probes;
+	AgentMap<CNexus> _Nexuses;
 
 private:
 	template<typename T>
@@ -73,7 +153,7 @@ private:
 
 		//Broodwar->sendText("Adding new agent with Id = %d", Id);
 		
-		std::shared_ptr<T> Agent = std::make_shared<T>(Unit);
+		Agent<T> Agent = std::make_shared<T>(Unit);
 		AgentMap.emplace(Id, Agent);
 		_AllAgents.emplace(Id, Agent);
 	}
@@ -87,10 +167,6 @@ private:
 	}
 
 	void RefreshAgent(const BWAPI::Unit Unit);
-
-	AgentMap<CAgent> _AllAgents;
-	AgentMap<CProbe> _Workers;
-	AgentMap<CNexus> _Nexuses;
 };
 
 class CTactician
@@ -101,6 +177,8 @@ public:
 	CAgentManager& GetAgentManager() { return _AgentManager; }
 
 private:
+	void SetProbeStrategies();
+
 	CAgentManager _AgentManager;
 };
 

@@ -1,4 +1,5 @@
 #include "zobbot.h"
+
 #include <iostream>
 
 using namespace BWAPI;
@@ -6,9 +7,9 @@ using namespace Filter;
 
 void CAgent::DoAction()
 {
-	if (_AgentStrategy)
+	if (_pAgentStrategy)
 	{
-		_AgentStrategy->DoAction(this);
+		_pAgentStrategy->DoAction(this);
 	}
 }
 
@@ -24,6 +25,12 @@ bool CAgent::IsActive()
 		return false;
 
 	return true;
+}
+
+void CAgent::ResetStrategy()
+{
+	delete _pAgentStrategy;
+	_pAgentStrategy = nullptr;
 }
 
 CProbe::CGatherStrategy::CGatherStrategy(Base Base)
@@ -50,12 +57,39 @@ void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 				{
 					Broodwar << Broodwar->getLastError() << std::endl;
 				}
-
-				//if (!Unit->gather(Unit->getClosestUnit(IsMineralField || IsRefinery)))
-				//{
-				//	Broodwar << Broodwar->getLastError() << std::endl;
-				//}
 			}
+		}
+	}
+}
+
+CProbe::CBuildStrategy::CBuildStrategy(BuildAction BuildAction)
+	: _BuildAction(BuildAction)
+{
+}
+
+void CProbe::CBuildStrategy::Do(CProbe* pProbe)
+{
+	if (_BuildAction->IsCompleted())
+	{
+		pProbe->ResetStrategy();
+		return;
+	}
+
+	BWAPI::Unit Unit = pProbe->_Unit;
+	BWAPI::UnitType Type = _BuildAction->GetUnitType();
+
+	if (CTactician::GetInstance()->CanAfford(Type))
+	{
+		TilePosition BuildLocation = Broodwar->getBuildLocation(Type, Unit->getTilePosition());
+		if (BuildLocation)
+		{
+			Broodwar->registerEvent([BuildLocation, Type](Game*)
+			{
+				Broodwar->drawBoxMap(Position(BuildLocation), Position(BuildLocation + Type.tileSize()), Colors::Blue);
+			}, nullptr, Type.buildTime() + 100);
+		
+			_bStartedBuildAction = true;
+			Unit->build(Type, BuildLocation);
 		}
 	}
 }
@@ -63,14 +97,14 @@ void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 void CNexus::CBuildProbe::Do(CNexus* pNexus)
 {
 	BWAPI::Unit Unit = pNexus->_Unit;
-	if (Unit->isIdle() && !Unit->train(Unit->getType().getRace().getWorker()))
+	BWAPI::UnitType WorkerType = Unit->getType().getRace().getWorker();
+	if (Unit->isIdle() && CTactician::GetInstance()->CanAffordUnallocated(WorkerType) && !Unit->train(WorkerType))
 	{
 		Position pos = Unit->getPosition();
 		Error lastErr = Broodwar->getLastError();
 		Broodwar->registerEvent([pos, lastErr](Game*) { Broodwar->drawTextMap(pos, "%c%s", Text::White, lastErr.c_str()); }, nullptr, Broodwar->getLatencyFrames());
 	}
 }
-
 
 //void CNexus::DoAction()
 //{
@@ -117,18 +151,260 @@ void CNexus::CBuildProbe::Do(CNexus* pNexus)
 //	}
 //}
 
+CTactician* CTactician::_pInstance = nullptr;
+
 void CTactician::Update()
 {
 	_AgentManager.RefreshAgents();
 
 	UpdateBases();
 	SetProbeStrategies();
+	UpdateBuildActions();
 
 	_AgentManager.DoActions();
+
+	//Broodwar->drawTextScreen(200, 40, "Total supply: %d", _Me->supplyTotal() / 2 );
+	//Broodwar->drawTextScreen(200, 60, "Used supply: %d", _Me->supplyUsed() / 2 );
+}
+
+void CTactician::AllocateResourcesForUnitType(BWAPI::UnitType UnitType)
+{
+	AllocateResources( UnitType.mineralPrice(), UnitType.gasPrice() );
+}
+
+void CTactician::DeallocateResourcesForUnitType(BWAPI::UnitType UnitType)
+{
+	DeallocateResources(UnitType.mineralPrice(), UnitType.gasPrice());
+}
+
+int CTactician::GetUnallocatedMinerals()
+{
+	int Minerals, Gas;
+	GetUnallocatedResources(Minerals, Gas);
+	return Minerals;
+}
+
+int CTactician::GetUnallocatedGas()
+{
+	int Minerals, Gas;
+	GetUnallocatedResources(Minerals, Gas);
+	return Gas;
+}
+
+void CTactician::GetResources(int& MineralsOut, int& GasOut)
+{
+	MineralsOut = _Me->minerals();
+	GasOut = _Me->gas();
+}
+
+void CTactician::GetUnallocatedResources(int& MineralsOut, int& GasOut)
+{
+	GetResources(MineralsOut, GasOut);
+	MineralsOut -= _AllocatedMinerals;
+	GasOut -= _AllocatedGas;
+}
+
+bool CTactician::CanAffordUnallocated(BWAPI::UnitType UnitType)
+{
+	int Minerals, Gas;
+	GetUnallocatedResources(Minerals, Gas);
+	return Minerals >= UnitType.mineralPrice() && Gas >= UnitType.gasPrice();
+}
+
+void CTactician::UnitCreated(BWAPI::Unit Unit)
+{
+	for (std::vector<BuildAction>::iterator It = _BuildActions.begin(); It != _BuildActions.end(); ++It) 
+	{
+		if ((*It)->GetUnitType() == Unit->getType())
+		{
+			(*It)->SetCompleted(true);
+			_BuildActions.erase(It);
+			break;
+		}
+	}
+}
+
+int CTactician::GetUnitTypeCount(BWAPI::UnitType UnitType, bool bCountUnfinished)
+{
+	int UnitCount = 0;
+	if (bCountUnfinished)
+	{
+		UnitCount += CountBuildActionFor(UnitType);
+	}
+
+	for (const BWAPI::Unit& Unit : _Me->getUnits())
+	{
+		if (Unit->getType() == UnitType)
+		{
+			UnitCount++;
+		}
+	}
+
+	return UnitCount;
+}
+
+bool bBuildOrderDone = false;
+void CTactician::UpdateBuildActions()
+{
+	if (_pBuildOrder)
+	{
+		int SupplyUsed = _Me->supplyUsed() / 2;
+		for (int i = 0; i < _pBuildOrder->_nEntries && SupplyUsed >= _pBuildOrder->pEntries[i]._Supply; i++)
+		{
+			SBuildOrderEntry& Entry = _pBuildOrder->pEntries[i];
+			int UnitCount = GetUnitCountForEntry(_pBuildOrder, i);
+			int OwnedUnits = GetUnitTypeCount(Entry._UnitType, true);
+
+			if (OwnedUnits < UnitCount)
+			{
+				bBuildOrderDone = false;
+				AddBuildAction(Entry._UnitType);
+			}
+
+			if (i == _pBuildOrder->_nEntries - 1)
+			{
+				if (!bBuildOrderDone)
+				{
+					Broodwar->sendText("Build order finished!");
+					bBuildOrderDone = true;
+				}
+			}
+		}
+	}
+
+	if (bBuildOrderDone)
+	{
+		if (NeedPylon() && !HasBuildActionFor(UnitTypes::Protoss_Pylon))
+		{
+			AddBuildAction(UnitTypes::Protoss_Pylon);
+		}
+	}
+
+	// Assign probes to build actions
+	for (BuildAction BuildAction : _BuildActions)
+	{
+		BWAPI::UnitType UnitType = BuildAction->GetUnitType();
+		if (!UnitType.isBuilding())
+			continue;
+
+		bool bHasAction = false;
+		for (auto It : _AgentManager._Probes)
+		{
+			Agent<CProbe> Probe = It.second;
+			CProbe::CBuildStrategy* pBuildStrategy = Probe->AccessStrategy<CProbe::CBuildStrategy>();
+			if (pBuildStrategy && pBuildStrategy->AccessBuildAction() == BuildAction)
+			{
+				bHasAction = true;
+				break;
+			}
+		}
+
+		if (!bHasAction)
+		{
+			Agent<CProbe> Probe = GetBuilder();
+			if (Probe)
+			{
+				Probe->SetStrategy<CProbe::CBuildStrategy>(BuildAction);
+			}
+		}
+	}
+}
+
+void CTactician::AddBuildAction(BWAPI::UnitType UnitType)
+{
+	_BuildActions.push_back( std::make_shared<CBuildAction>( UnitType ) );
+}
+
+namespace
+{
+	int GetSupplyThreshold(int SupplyTotal)
+	{
+		if (SupplyTotal <= 9)
+			return 1;
+		else if (SupplyTotal <= 17)
+			return 2;
+		else
+			return 3;
+	}
+}
+
+bool CTactician::NeedPylon()
+{
+	if (_Me->supplyTotal() == 200)
+	{
+		return false;
+	}
+
+	int IncompletePylons = _Me->incompleteUnitCount( _Me->getRace().getSupplyProvider() );
+	int SupplyTotal = (_Me->supplyTotal() / 2) + IncompletePylons * 8;
+	int SupplyUsed = _Me->supplyUsed() / 2;
+	return (SupplyTotal - SupplyUsed) <= GetSupplyThreshold(SupplyTotal);
+}
+
+bool CTactician::HasBuildActionFor(BWAPI::UnitType UnitType)
+{
+	for (BuildAction BuildAction : _BuildActions)
+	{
+		if (BuildAction->GetUnitType() == UnitType)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+int CTactician::CountBuildActionFor(BWAPI::UnitType UnitType)
+{
+	int Count = 0;
+	for (BuildAction BuildAction : _BuildActions)
+	{
+		if (BuildAction->GetUnitType() == UnitType)
+		{
+			Count++;
+		}
+	}
+
+	return Count;
+}
+
+bool CTactician::CanAfford(BWAPI::UnitType UnitType)
+{
+	int Minerals, Gas;
+	GetResources(Minerals, Gas);
+	return Minerals >= UnitType.mineralPrice() && Gas >= UnitType.gasPrice();
 }
 
 void CTactician::OnStart()
 {
+	SetBuildOrder("9/9 Gateways");
+	_Me = Broodwar->self();
+}
+
+Agent<CProbe> CTactician::GetBuilder()
+{
+	for (auto It : _AgentManager._Probes)
+	{
+		Agent<CProbe> Probe = It.second;
+		//if (Probe->HasStrategyType<CProbe::CGatherStrategy>() && !Probe->_Unit->isGatheringGas() &&
+		//	!Probe->_Unit->isGatheringMinerals() && !Probe->_Unit->isCarryingMinerals() && !Probe->_Unit->isCarryingGas())
+		if (Probe->HasStrategyType<CProbe::CGatherStrategy>() && !Probe->_Unit->isCarryingMinerals() && !Probe->_Unit->isCarryingGas())
+		{
+			return Probe;
+		}
+	}
+
+	return nullptr;
+}
+
+void CTactician::SetBuildOrder(const char* pName)
+{
+	const SBuildOrder* pBuildOrder = GetBuildOrder( pName );
+	if (pBuildOrder)
+	{
+		Broodwar->sendText("Setting build order '%s'", pBuildOrder->pName);
+		_pBuildOrder = pBuildOrder;
+	}
 }
 
 void CTactician::UpdateBases()
@@ -262,7 +538,7 @@ void CZobbot::onStart()
 			Broodwar << "The matchup is " << Broodwar->self()->getRace() << " vs " << Broodwar->enemy()->getRace() << std::endl;
 	}
 
-	_Tactician.OnStart();
+	CTactician::CreateInstance()->OnStart();
 }
 
 void CZobbot::onEnd(bool isWinner)
@@ -284,7 +560,7 @@ void CZobbot::onFrame()
 	if (Broodwar->getFrameCount() % Broodwar->getLatencyFrames() != 0)
 		return;
 
-	_Tactician.Update();
+	CTactician::GetInstance()->Update();
 }
 
 void CZobbot::onSendText(std::string text)
@@ -330,23 +606,27 @@ void CZobbot::onUnitHide(BWAPI::Unit unit)
 {
 }
 
-void CZobbot::onUnitCreate(BWAPI::Unit unit)
+void CZobbot::onUnitCreate(BWAPI::Unit Unit)
 {
 	if (Broodwar->isReplay())
 	{
-		if (unit->getType().isBuilding() && !unit->getPlayer()->isNeutral())
+		if (Unit->getType().isBuilding() && !Unit->getPlayer()->isNeutral())
 		{
 			int seconds = Broodwar->getFrameCount() / 24;
 			int minutes = seconds / 60;
 			seconds %= 60;
-			Broodwar->sendText("%.2d:%.2d: %s creates a %s", minutes, seconds, unit->getPlayer()->getName().c_str(), unit->getType().c_str());
+			Broodwar->sendText("%.2d:%.2d: %s creates a %s", minutes, seconds, Unit->getPlayer()->getName().c_str(), Unit->getType().c_str());
 		}
+	}
+	else
+	{
+		CTactician::GetInstance()->UnitCreated(Unit);
 	}
 }
 
 void CZobbot::onUnitDestroy(BWAPI::Unit Unit)
 {
-	_Tactician.GetAgentManager().RemoveAgent( Unit );
+	CTactician::GetInstance()->GetAgentManager().RemoveAgent( Unit );
 }
 
 void CZobbot::onUnitMorph(BWAPI::Unit Unit)
@@ -386,7 +666,7 @@ void CBase::Update()
 {
 	_MineralFields.clear();
 
-	BWAPI::Unitset MineralFields = Broodwar->getUnitsInRadius(_NexusPosition, 500, IsMineralField);
+	BWAPI::Unitset MineralFields = Broodwar->getUnitsInRadius(_NexusPosition, 300, IsMineralField);
 	for (const BWAPI::Unit& Unit : MineralFields)
 	{
 		_MineralFields.push_back(Unit);
@@ -403,3 +683,17 @@ bool CBase::HasMineralField()
 {
 	return _MineralFields.size() > 0;
 }
+
+CBuildAction::CBuildAction(BWAPI::UnitType UnitType)
+	: _UnitType(UnitType)
+{
+	Broodwar->sendText("Started build action '%s'", _UnitType.getName().c_str());
+	CTactician::GetInstance()->AllocateResourcesForUnitType(_UnitType);
+}
+
+CBuildAction::~CBuildAction()
+{
+	Broodwar->sendText("Finished build action '%s'", _UnitType.getName().c_str());
+	CTactician::GetInstance()->DeallocateResourcesForUnitType(_UnitType);
+}
+

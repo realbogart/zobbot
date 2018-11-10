@@ -5,6 +5,8 @@ SET ( SOURCE
 	source/dll.cpp
 	source/zobbot.cpp
 	source/zobbot.h
+	source/buildorders.cpp
+	source/buildorders.h
 	)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

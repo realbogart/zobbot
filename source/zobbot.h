@@ -2,19 +2,22 @@
 #include <BWAPI.h>
 #include <vector>
 
+#include "buildorders.h"
+
 struct SCommand
 {
 	float _Score = 0.0f;
 };
 
 class CAgentStrategyBase;
+class CTactician;
 
 class CAgent
 {
 public:
 	CAgent(const BWAPI::Unit Unit, CAgentStrategyBase* pAgentStrategy = nullptr)
 		: _Unit( Unit )
-		, _AgentStrategy( pAgentStrategy )
+		, _pAgentStrategy( pAgentStrategy )
 	{
 	}
 
@@ -28,25 +31,35 @@ public:
 	void SetStrategy(Args... args)
 	{
 		BWAPI::Broodwar->sendText("Assigning strategy '%s' to id = %d", typeid(T).name(), _Unit->getID());
-		_AgentStrategy.reset( new T(args...) );
+		
+		if (_pAgentStrategy)
+		{
+			ResetStrategy();
+		}
+
+		_pAgentStrategy = new T(args...);
 	}
 
-	void ResetStrategy()
-	{
-		_AgentStrategy.release();
-	}
+	void ResetStrategy();
 
-	bool HasStrategy() { return _AgentStrategy != nullptr; }
+	bool HasStrategy() { return _pAgentStrategy != nullptr; }
+
+	template<typename T>
+	T* AccessStrategy() { return dynamic_cast<T*>(_pAgentStrategy); }
+
+	template<typename T>
+	bool HasStrategyType() { return AccessStrategy<T>() != nullptr; }
 
 	BWAPI::Unit _Unit = nullptr;
 
 protected:
-	std::unique_ptr<CAgentStrategyBase> _AgentStrategy;
+	CAgentStrategyBase* _pAgentStrategy = nullptr;
 };
 
 class CAgentStrategyBase
 {
 public:
+	virtual ~CAgentStrategyBase() {};
 	virtual void DoAction(CAgent* pAgent) = 0;
 };
 
@@ -66,6 +79,24 @@ public:
 
 	virtual void Do(T* pAgent) = 0;
 };
+
+class CBuildAction
+{
+public:
+	CBuildAction(BWAPI::UnitType UnitType);
+	~CBuildAction();
+
+	BWAPI::UnitType GetUnitType() { return _UnitType; }
+
+	void SetCompleted(bool bCompleted) { _bCompleted = bCompleted; }
+	bool IsCompleted() { return _bCompleted; }
+
+private:
+	BWAPI::UnitType _UnitType;
+	bool _bCompleted = false;
+};
+
+using BuildAction = std::shared_ptr<CBuildAction>;
 
 class CBase
 {
@@ -103,6 +134,20 @@ public:
 
 	private:
 		Base _Base;
+	};
+
+	class CBuildStrategy : public CAgentStrategy<CProbe>
+	{
+	public:
+		CBuildStrategy(BuildAction BuildAction);
+
+		void Do(CProbe* pProbe);
+
+		BuildAction AccessBuildAction() { return _BuildAction; }
+
+	private:
+		BuildAction _BuildAction;
+		bool _bStartedBuildAction = false;
 	};
 
 	CProbe(const BWAPI::Unit Unit)
@@ -213,13 +258,51 @@ public:
 
 	CAgentManager& GetAgentManager() { return _AgentManager; }
 
+	void AllocateResourcesForUnitType(BWAPI::UnitType UnitType);
+	void DeallocateResourcesForUnitType(BWAPI::UnitType UnitType);
+
+	void AllocateResources(int Minerals, int Gas) { _AllocatedMinerals += Minerals;  _AllocatedGas += Gas; }
+	void DeallocateResources(int Minerals, int Gas) { _AllocatedMinerals -= Minerals; _AllocatedGas -= Gas; };
+
+	int GetUnallocatedMinerals();
+	int GetUnallocatedGas();
+
+	void GetResources(int& MineralsOut, int& GasOut);
+	void GetUnallocatedResources(int& MineralsOut, int& GasOut);
+
+	bool CanAfford(BWAPI::UnitType UnitType);
+	bool CanAffordUnallocated(BWAPI::UnitType UnitType);
+
+	void UnitCreated(BWAPI::Unit Unit);
+
+	static CTactician* CreateInstance() { _pInstance = new CTactician(); return _pInstance; };
+	static CTactician* GetInstance() { return _pInstance; };
+
 private:
+	const SBuildOrder* _pBuildOrder = nullptr;
+
+	static CTactician* _pInstance;
+	Agent<CProbe> GetBuilder();
+
+	void SetBuildOrder(const char* pName);
 	void UpdateBases();
 	void SetProbeStrategies();
+	void UpdateBuildActions();
+	void AddBuildAction(BWAPI::UnitType UnitType);
+	bool NeedPylon();
+	int CountBuildActionFor(BWAPI::UnitType UnitType);
+	bool HasBuildActionFor(BWAPI::UnitType UnitType);
+	int GetUnitTypeCount(BWAPI::UnitType UnitType, bool bCountUnfinished);
+
+	int _AllocatedMinerals = 0;
+	int _AllocatedGas = 0;
+
+	BWAPI::Player _Me;
 
 	CAgentManager _AgentManager;
 
 	std::vector<Base> _Bases;
+	std::vector<BuildAction> _BuildActions;
 };
 
 class CZobbot : public BWAPI::AIModule
@@ -242,7 +325,4 @@ public:
 	virtual void onUnitRenegade(BWAPI::Unit unit);
 	virtual void onSaveGame(std::string gameName);
 	virtual void onUnitComplete(BWAPI::Unit unit);
-
-private:
-	CTactician _Tactician;
 };

@@ -67,13 +67,42 @@ public:
 	virtual void Do(T* pAgent) = 0;
 };
 
+class CBase
+{
+public:
+	CBase(BWAPI::Position NexusPosition)
+		: _NexusPosition(NexusPosition)
+	{
+	}
+
+	bool HasNexus();
+	void Update();
+
+	BWAPI::Unit GetMineralField();
+	bool HasMineralField();
+
+	BWAPI::Position GetPosition() { return _NexusPosition; }
+
+private:
+	std::vector<BWAPI::Unit> _MineralFields;
+	int _CurrentMineralField = 0;
+
+	BWAPI::Position _NexusPosition;
+};
+
+using Base = std::shared_ptr<CBase>;
+
 class CProbe : public CAgent
 {
 public:
 	class CGatherStrategy : public CAgentStrategy<CProbe>
 	{
 	public:
+		CGatherStrategy(Base Base);
 		void Do(CProbe* pProbe);
+
+	private:
+		Base _Base;
 	};
 
 	CProbe(const BWAPI::Unit Unit)
@@ -96,6 +125,13 @@ public:
 	{
 		SetStrategy<CBuildProbe>();
 	}
+
+	void SetBase(Base Base) { _Base = Base; }
+	bool HasBase() { return _Base != nullptr; }
+	Base GetBase() { return _Base; }
+
+private:
+	Base _Base;
 };
 
 template<typename T>
@@ -120,7 +156,7 @@ public:
 		for (auto It : Map)
 		{
 			Agent<T> Current = std::dynamic_pointer_cast<T>( It.second );
-			if (Current)
+			if (Current && Current->IsActive())
 			{
 				int Distance = Current->_Unit->getDistance(Position);
 				if (Distance < Max)
@@ -172,14 +208,18 @@ private:
 class CTactician
 {
 public:
+	void OnStart();
 	void Update();
 
 	CAgentManager& GetAgentManager() { return _AgentManager; }
 
 private:
+	void UpdateBases();
 	void SetProbeStrategies();
 
 	CAgentManager _AgentManager;
+
+	std::vector<Base> _Bases;
 };
 
 class CZobbot : public BWAPI::AIModule

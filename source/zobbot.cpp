@@ -26,11 +26,16 @@ bool CAgent::IsActive()
 	return true;
 }
 
+CProbe::CGatherStrategy::CGatherStrategy(Base Base)
+	: _Base( Base )
+{
+}
+
 void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 {
 	BWAPI::Unit Unit = pProbe->_Unit;
 
-	if (Unit->isIdle())
+	if (Unit->isIdle() && _Base->HasNexus())
 	{
 		if (Unit->isCarryingGas() || Unit->isCarryingMinerals())
 		{
@@ -38,9 +43,18 @@ void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 		}
 		else
 		{
-			if (!Unit->gather(Unit->getClosestUnit(IsMineralField || IsRefinery)))
+			if (_Base->HasMineralField())
 			{
-				Broodwar << Broodwar->getLastError() << std::endl;
+				BWAPI::Unit MineralField = _Base->GetMineralField();
+				if (!Unit->gather(MineralField))
+				{
+					Broodwar << Broodwar->getLastError() << std::endl;
+				}
+
+				//if (!Unit->gather(Unit->getClosestUnit(IsMineralField || IsRefinery)))
+				//{
+				//	Broodwar << Broodwar->getLastError() << std::endl;
+				//}
 			}
 		}
 	}
@@ -107,9 +121,49 @@ void CTactician::Update()
 {
 	_AgentManager.RefreshAgents();
 
+	UpdateBases();
 	SetProbeStrategies();
 
 	_AgentManager.DoActions();
+}
+
+void CTactician::OnStart()
+{
+}
+
+void CTactician::UpdateBases()
+{
+	for (auto It : _AgentManager._Nexuses)
+	{
+		Agent<CNexus> Nexus = It.second;
+		if (Nexus && Nexus->IsActive())
+		{
+			bool bExistingBase = false;
+
+			BWAPI::Position Position = Nexus->_Unit->getPosition();
+			for (Base Base : _Bases)
+			{
+				if (Base->GetPosition() == Position)
+				{
+					Nexus->SetBase(Base);
+					bExistingBase = true;
+					break;
+				}
+			}
+
+			if (!bExistingBase)
+			{
+				Base Base = std::make_shared<CBase>(Position);
+				_Bases.push_back(Base);
+				Nexus->SetBase(Base);
+			}
+		}
+	}
+
+	for (Base Base : _Bases)
+	{
+		Base->Update();
+	}
 }
 
 void CTactician::SetProbeStrategies()
@@ -123,7 +177,7 @@ void CTactician::SetProbeStrategies()
 			Agent<CNexus> Nexus = CAgentManager::AccessClosest( _AgentManager._Nexuses, Probe->_Unit->getPosition() );
 			if (Nexus)
 			{
-				Probe->SetStrategy<CProbe::CGatherStrategy>();
+				Probe->SetStrategy<CProbe::CGatherStrategy>(Nexus->GetBase());
 			}
 			else
 				break;
@@ -207,6 +261,8 @@ void CZobbot::onStart()
 		if (Broodwar->enemy())
 			Broodwar << "The matchup is " << Broodwar->self()->getRace() << " vs " << Broodwar->enemy()->getRace() << std::endl;
 	}
+
+	_Tactician.OnStart();
 }
 
 void CZobbot::onEnd(bool isWinner)
@@ -318,4 +374,32 @@ void CZobbot::onSaveGame(std::string gameName)
 
 void CZobbot::onUnitComplete(BWAPI::Unit unit)
 {
+}
+
+bool CBase::HasNexus()
+{
+	BWAPI::Unitset Units = Broodwar->getUnitsInRadius( _NexusPosition, 10, IsResourceDepot && IsOwned );
+	return Units.size() > 0;
+}
+
+void CBase::Update()
+{
+	_MineralFields.clear();
+
+	BWAPI::Unitset MineralFields = Broodwar->getUnitsInRadius(_NexusPosition, 500, IsMineralField);
+	for (const BWAPI::Unit& Unit : MineralFields)
+	{
+		_MineralFields.push_back(Unit);
+	}
+}
+
+BWAPI::Unit CBase::GetMineralField()
+{
+	_CurrentMineralField = _CurrentMineralField % _MineralFields.size();
+	return _MineralFields[_CurrentMineralField++];
+}
+
+bool CBase::HasMineralField()
+{
+	return _MineralFields.size() > 0;
 }

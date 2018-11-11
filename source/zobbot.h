@@ -30,7 +30,7 @@ public:
 	template<typename T, typename... Args>
 	void SetStrategy(Args... args)
 	{
-		BWAPI::Broodwar->sendText("Assigning strategy '%s' to id = %d", typeid(T).name(), _Unit->getID());
+		//BWAPI::Broodwar->sendText("Assigning strategy '%s' to id = %d", typeid(T).name(), _Unit->getID());
 		
 		if (_pAgentStrategy)
 		{
@@ -67,6 +67,7 @@ template<typename T>
 class CAgentStrategy : public CAgentStrategyBase
 {
 public:
+	virtual ~CAgentStrategy() {};
 	void DoAction(CAgent* pAgent) override
 	{
 		T* pAgentTyped = dynamic_cast<T*>(pAgent);
@@ -123,6 +124,22 @@ private:
 
 using Base = std::shared_ptr<CBase>;
 
+class CScoutStrategy : public CAgentStrategy<CAgent>
+{
+public:
+	CScoutStrategy();
+	~CScoutStrategy();
+
+	void Do(CAgent* pAgent);
+
+	static int NumScouts;
+
+private:
+	void UpdateTarget(CAgent* pAgent);
+	BWAPI::TilePosition _TargetPosition;
+	bool _bHasTarget = false;
+};
+
 class CProbe : public CAgent
 {
 public:
@@ -148,6 +165,7 @@ public:
 	private:
 		BuildAction _BuildAction;
 		bool _bStartedBuildAction = false;
+		int _LastChecked = 0;
 	};
 
 	CProbe(const BWAPI::Unit Unit)
@@ -177,6 +195,41 @@ public:
 
 private:
 	Base _Base;
+};
+
+class CGateway : public CAgent
+{
+public:
+	class CBuildUnits : public CAgentStrategy<CGateway>
+	{
+	public:
+		void Do(CGateway* pGateway);
+	};
+
+	CGateway(const BWAPI::Unit Unit)
+		: CAgent(Unit)
+	{
+		SetStrategy<CBuildUnits>();
+	}
+};
+
+class CZealot : public CAgent
+{
+public:
+	class CAttackMain : public CAgentStrategy<CZealot>
+	{
+	public:
+		void Do(CZealot* pZealot);
+
+	private:
+		bool _bAttacking = false;
+	};
+
+	CZealot(const BWAPI::Unit Unit)
+		: CAgent(Unit)
+	{
+		SetStrategy<CAttackMain>();
+	}
 };
 
 template<typename T>
@@ -218,6 +271,8 @@ public:
 	AgentMap<CAgent> _AllAgents;
 	AgentMap<CProbe> _Probes;
 	AgentMap<CNexus> _Nexuses;
+	AgentMap<CGateway> _Gateways;
+	AgentMap<CZealot> _Zealots;
 
 private:
 	template<typename T>
@@ -250,6 +305,22 @@ private:
 	void RefreshAgent(const BWAPI::Unit Unit);
 };
 
+class CVision
+{
+public:
+	CVision();
+	bool GetEnemyMain(BWAPI::TilePosition& TilePositionOut) const;
+	bool GetUnexploredStartLocation(BWAPI::TilePosition& TilePositionOut) const;
+
+	void Init();
+	void Update();
+
+private:
+	std::deque<BWAPI::TilePosition> _UnexploredStartLocations;
+	bool _bFoundEnemyMain = false;
+	BWAPI::TilePosition _EnemyMainLocation;
+};
+
 class CTactician
 {
 public:
@@ -273,12 +344,20 @@ public:
 	bool CanAfford(BWAPI::UnitType UnitType);
 	bool CanAffordUnallocated(BWAPI::UnitType UnitType);
 
+	bool IsBuildOrderDone() { return _bBuildOrderDone; }
+
 	void UnitCreated(BWAPI::Unit Unit);
 
 	static CTactician* CreateInstance() { _pInstance = new CTactician(); return _pInstance; };
 	static CTactician* GetInstance() { return _pInstance; };
 
+	BuildAction AccessBuildAction(BWAPI::UnitType UnitType);
+
+	const CVision& GetVision() const { return _Vision; };
+
 private:
+	CVision _Vision;
+
 	const SBuildOrder* _pBuildOrder = nullptr;
 
 	static CTactician* _pInstance;
@@ -288,6 +367,7 @@ private:
 	void UpdateBases();
 	void SetProbeStrategies();
 	void UpdateBuildActions();
+	void UpdateScouts();
 	void AddBuildAction(BWAPI::UnitType UnitType);
 	bool NeedPylon();
 	int CountBuildActionFor(BWAPI::UnitType UnitType);
@@ -296,6 +376,7 @@ private:
 
 	int _AllocatedMinerals = 0;
 	int _AllocatedGas = 0;
+	bool _bBuildOrderDone = false;
 
 	BWAPI::Player _Me;
 

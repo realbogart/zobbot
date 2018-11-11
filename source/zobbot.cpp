@@ -38,6 +38,45 @@ CProbe::CGatherStrategy::CGatherStrategy(Base Base)
 {
 }
 
+int CScoutStrategy::NumScouts = 0;
+
+CScoutStrategy::CScoutStrategy()
+{
+	NumScouts++;
+}
+
+CScoutStrategy::~CScoutStrategy()
+{
+	NumScouts--;
+}
+
+void CScoutStrategy::Do(CAgent* pAgent)
+{
+	if (!_bHasTarget || !pAgent->_Unit->isMoving())
+		UpdateTarget(pAgent);
+
+	const CVision& Vision = CTactician::GetInstance()->GetVision();
+	if (Broodwar->isVisible(_TargetPosition))
+	{
+		UpdateTarget(pAgent);
+	}
+}
+
+void CScoutStrategy::UpdateTarget(CAgent* pAgent)
+{
+	BWAPI::TilePosition OldTarget = _TargetPosition;
+	const CVision& Vision = CTactician::GetInstance()->GetVision();
+	if (Vision.GetEnemyMain(_TargetPosition) || Vision.GetUnexploredStartLocation(_TargetPosition))
+	{
+		if (_TargetPosition != OldTarget)
+		{
+			BWAPI::Position PixelPosition(_TargetPosition);
+			pAgent->_Unit->move(PixelPosition);
+			_bHasTarget = true;
+		}
+	}
+}
+
 void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 {
 	BWAPI::Unit Unit = pProbe->_Unit;
@@ -78,8 +117,10 @@ void CProbe::CBuildStrategy::Do(CProbe* pProbe)
 	BWAPI::Unit Unit = pProbe->_Unit;
 	BWAPI::UnitType Type = _BuildAction->GetUnitType();
 
-	if (CTactician::GetInstance()->CanAfford(Type))
+	if (_LastChecked + 20 < Broodwar->getFrameCount() && CTactician::GetInstance()->CanAfford(Type))
 	{
+		_LastChecked = Broodwar->getFrameCount();
+
 		TilePosition BuildLocation = Broodwar->getBuildLocation(Type, Unit->getTilePosition());
 		if (BuildLocation)
 		{
@@ -91,6 +132,19 @@ void CProbe::CBuildStrategy::Do(CProbe* pProbe)
 			_bStartedBuildAction = true;
 			Unit->build(Type, BuildLocation);
 		}
+	}
+}
+
+void CZealot::CAttackMain::Do(CZealot* pZealot)
+{
+	BWAPI::Unit Unit = pZealot->_Unit;
+	const CVision& Vision = CTactician::GetInstance()->GetVision();
+	BWAPI::TilePosition EnemyMain;
+	if (!_bAttacking && Vision.GetEnemyMain(EnemyMain))
+	{
+		Position Position(EnemyMain);
+		Unit->attack(Position);
+		_bAttacking = true;
 	}
 }
 
@@ -106,50 +160,24 @@ void CNexus::CBuildProbe::Do(CNexus* pNexus)
 	}
 }
 
-//void CNexus::DoAction()
-//{
-//	if (_Unit->isIdle() && !_Unit->train(_Unit->getType().getRace().getWorker()))
-//	{
-//		Position pos = _Unit->getPosition();
-//		Error lastErr = Broodwar->getLastError();
-//		Broodwar->registerEvent([pos, lastErr](Game*) { Broodwar->drawTextMap(pos, "%c%s", Text::White, lastErr.c_str()); }, nullptr, Broodwar->getLatencyFrames());
-//	
-//		UnitType supplyProviderType = _Unit->getType().getRace().getSupplyProvider();
-//		static int lastChecked = 0;
-//	
-//		if (lastErr == Errors::Insufficient_Supply &&
-//			lastChecked + 400 < Broodwar->getFrameCount() &&
-//			Broodwar->self()->incompleteUnitCount(supplyProviderType) == 0)
-//		{
-//			lastChecked = Broodwar->getFrameCount();
-//	
-//			Unit supplyBuilder = _Unit->getClosestUnit(GetType == supplyProviderType.whatBuilds().first &&
-//				(IsIdle || IsGatheringMinerals) &&
-//				IsOwned);
-//	
-//			if (supplyBuilder)
-//			{
-//				if (supplyProviderType.isBuilding())
-//				{
-//					TilePosition targetBuildLocation = Broodwar->getBuildLocation(supplyProviderType, supplyBuilder->getTilePosition());
-//					if (targetBuildLocation)
-//					{
-//						Broodwar->registerEvent([targetBuildLocation, supplyProviderType](Game*)
-//						{
-//							Broodwar->drawBoxMap(Position(targetBuildLocation), Position(targetBuildLocation + supplyProviderType.tileSize()), Colors::Blue);
-//						}, nullptr, supplyProviderType.buildTime() + 100);
-//	
-//						supplyBuilder->build(supplyProviderType, targetBuildLocation);
-//					}
-//				}
-//				else
-//				{
-//					supplyBuilder->train(supplyProviderType);
-//				}
-//			}
-//		}
-//	}
-//}
+void CGateway::CBuildUnits::Do(CGateway* pGateway)
+{
+	BWAPI::Unit Unit = pGateway->_Unit;
+	if (Unit->isIdle())
+	{
+		BuildAction BuildAction = CTactician::GetInstance()->AccessBuildAction(UnitTypes::Protoss_Zealot);
+		if (BuildAction)
+		{
+			Unit->train(BuildAction->GetUnitType());
+		}
+		else if (CTactician::GetInstance()->CanAffordUnallocated(UnitTypes::Protoss_Zealot) && !Unit->train(UnitTypes::Protoss_Zealot))
+		{
+			Position pos = Unit->getPosition();
+			Error lastErr = Broodwar->getLastError();
+			Broodwar->registerEvent([pos, lastErr](Game*) { Broodwar->drawTextMap(pos, "%c%s", Text::White, lastErr.c_str()); }, nullptr, Broodwar->getLatencyFrames());
+		}
+	}
+}
 
 CTactician* CTactician::_pInstance = nullptr;
 
@@ -157,9 +185,12 @@ void CTactician::Update()
 {
 	_AgentManager.RefreshAgents();
 
+	_Vision.Update();
+
 	UpdateBases();
 	SetProbeStrategies();
 	UpdateBuildActions();
+	UpdateScouts();
 
 	_AgentManager.DoActions();
 
@@ -224,6 +255,19 @@ void CTactician::UnitCreated(BWAPI::Unit Unit)
 	}
 }
 
+BuildAction CTactician::AccessBuildAction(BWAPI::UnitType UnitType)
+{
+	for (BuildAction BuildAction : _BuildActions)
+	{
+		if (BuildAction->GetUnitType() == UnitType)
+		{
+			return BuildAction;
+		}
+	}
+
+	return nullptr;
+}
+
 int CTactician::GetUnitTypeCount(BWAPI::UnitType UnitType, bool bCountUnfinished)
 {
 	int UnitCount = 0;
@@ -243,7 +287,6 @@ int CTactician::GetUnitTypeCount(BWAPI::UnitType UnitType, bool bCountUnfinished
 	return UnitCount;
 }
 
-bool bBuildOrderDone = false;
 void CTactician::UpdateBuildActions()
 {
 	if (_pBuildOrder)
@@ -257,22 +300,22 @@ void CTactician::UpdateBuildActions()
 
 			if (OwnedUnits < UnitCount)
 			{
-				bBuildOrderDone = false;
+				_bBuildOrderDone = false;
 				AddBuildAction(Entry._UnitType);
 			}
 
 			if (i == _pBuildOrder->_nEntries - 1)
 			{
-				if (!bBuildOrderDone)
+				if (!_bBuildOrderDone)
 				{
 					Broodwar->sendText("Build order finished!");
-					bBuildOrderDone = true;
+					_bBuildOrderDone = true;
 				}
 			}
 		}
 	}
 
-	if (bBuildOrderDone)
+	if (_bBuildOrderDone)
 	{
 		if (NeedPylon() && !HasBuildActionFor(UnitTypes::Protoss_Pylon))
 		{
@@ -323,8 +366,10 @@ namespace
 			return 1;
 		else if (SupplyTotal <= 17)
 			return 2;
+		else if (SupplyTotal <= 33)
+			return 4;
 		else
-			return 3;
+			return 8;
 	}
 }
 
@@ -378,7 +423,9 @@ bool CTactician::CanAfford(BWAPI::UnitType UnitType)
 void CTactician::OnStart()
 {
 	SetBuildOrder("9/9 Gateways");
+	//SetBuildOrder("12Nexus");
 	_Me = Broodwar->self();
+	_Vision.Init();
 }
 
 Agent<CProbe> CTactician::GetBuilder()
@@ -386,8 +433,6 @@ Agent<CProbe> CTactician::GetBuilder()
 	for (auto It : _AgentManager._Probes)
 	{
 		Agent<CProbe> Probe = It.second;
-		//if (Probe->HasStrategyType<CProbe::CGatherStrategy>() && !Probe->_Unit->isGatheringGas() &&
-		//	!Probe->_Unit->isGatheringMinerals() && !Probe->_Unit->isCarryingMinerals() && !Probe->_Unit->isCarryingGas())
 		if (Probe->HasStrategyType<CProbe::CGatherStrategy>() && !Probe->_Unit->isCarryingMinerals() && !Probe->_Unit->isCarryingGas())
 		{
 			return Probe;
@@ -439,6 +484,29 @@ void CTactician::UpdateBases()
 	for (Base Base : _Bases)
 	{
 		Base->Update();
+	}
+}
+
+void CTactician::UpdateScouts()
+{
+	if (_Me->supplyUsed() / 2 < 9)
+		return;
+
+	if (CScoutStrategy::NumScouts < 1)
+	{
+		for (auto It : _AgentManager._Probes)
+		{
+			Agent<CProbe> Probe = It.second;
+			if (Probe && Probe->IsActive())
+			{
+				if (( !Probe->HasStrategy() || Probe->HasStrategyType<CProbe::CGatherStrategy>() ) &&
+					 (!Probe->_Unit->isCarryingMinerals() && !Probe->_Unit->isCarryingGas()))
+				{
+					Probe->SetStrategy<CScoutStrategy>();
+					break;
+				}
+			}
+		}
 	}
 }
 
@@ -496,6 +564,14 @@ void CAgentManager::RemoveAgent(const BWAPI::Unit Unit)
 	{
 		RemoveAgent(_Nexuses, Id);
 	}
+	else if (Unit->getType() == UnitTypes::Protoss_Gateway)
+	{
+		RemoveAgent(_Gateways, Id);
+	}
+	else if (Unit->getType() == UnitTypes::Protoss_Zealot)
+	{
+		RemoveAgent(_Zealots, Id);
+	}
 }
 
 void CAgentManager::RefreshAgent(const BWAPI::Unit Unit)
@@ -507,6 +583,14 @@ void CAgentManager::RefreshAgent(const BWAPI::Unit Unit)
 	else if (Unit->getType().isResourceDepot())
 	{
 		SetAgent( _Nexuses, Unit );
+	}
+	else if (Unit->getType() == UnitTypes::Protoss_Gateway)
+	{
+		SetAgent( _Gateways, Unit );
+	}
+	else if (Unit->getType() == UnitTypes::Protoss_Zealot)
+	{
+		SetAgent( _Zealots, Unit );
 	}
 	else
 	{
@@ -695,5 +779,69 @@ CBuildAction::~CBuildAction()
 {
 	Broodwar->sendText("Finished build action '%s'", _UnitType.getName().c_str());
 	CTactician::GetInstance()->DeallocateResourcesForUnitType(_UnitType);
+}
+
+CVision::CVision()
+{
+}
+
+bool CVision::GetEnemyMain(BWAPI::TilePosition& TilePositionOut) const
+{
+	if (!_bFoundEnemyMain)
+		return false;
+
+	TilePositionOut = _EnemyMainLocation;
+
+	return true;
+}
+
+bool CVision::GetUnexploredStartLocation(BWAPI::TilePosition& TilePositionOut) const
+{
+	if (_UnexploredStartLocations.size() < 1)
+		return false;
+
+	TilePositionOut = _UnexploredStartLocations.front();
+	return true;
+}
+
+void CVision::Init()
+{
+	_UnexploredStartLocations = Broodwar->getStartLocations();
+}
+
+void CVision::Update()
+{
+	auto It = _UnexploredStartLocations.begin();
+	while (It != _UnexploredStartLocations.end())
+	{
+		BWAPI::TilePosition TilePosition = *It;
+		if (Broodwar->isVisible(TilePosition))
+		{
+			if (Broodwar->getUnitsOnTile(TilePosition, IsEnemy && IsResourceDepot).size() > 0)
+			{
+				if (!_bFoundEnemyMain)
+				{
+					_bFoundEnemyMain = true;
+					_EnemyMainLocation = TilePosition;
+					Broodwar->sendText("Enemy found");
+				}
+			}
+			else
+			{
+				It = _UnexploredStartLocations.erase(It);
+				Broodwar->sendText("No enemy here");
+				break;
+			}
+		}
+
+		++It;
+	}
+
+	if (!_bFoundEnemyMain && _UnexploredStartLocations.size() == 1)
+	{
+		_bFoundEnemyMain = true;
+		_EnemyMainLocation = _UnexploredStartLocations.front();
+		Broodwar->sendText("Deduced enemy location");
+	}
 }
 

@@ -223,6 +223,7 @@ public:
 
 	private:
 		bool _bAttacking = false;
+		BWAPI::Position _TargetPosition;
 	};
 
 	CZealot(const BWAPI::Unit Unit)
@@ -369,6 +370,8 @@ private:
 	void UpdateBuildActions();
 	void UpdateScouts();
 	void AddBuildAction(BWAPI::UnitType UnitType);
+	void BuildSingleOfType(BWAPI::UnitType UnitType);
+	bool NeedGateway();
 	bool NeedPylon();
 	int CountBuildActionFor(BWAPI::UnitType UnitType);
 	bool HasBuildActionFor(BWAPI::UnitType UnitType);

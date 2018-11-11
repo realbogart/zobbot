@@ -137,14 +137,28 @@ void CProbe::CBuildStrategy::Do(CProbe* pProbe)
 
 void CZealot::CAttackMain::Do(CZealot* pZealot)
 {
+	if (CTactician::GetInstance()->GetAgentManager()._Zealots.size() < 12)
+		return;
+
 	BWAPI::Unit Unit = pZealot->_Unit;
 	const CVision& Vision = CTactician::GetInstance()->GetVision();
 	BWAPI::TilePosition EnemyMain;
-	if (!_bAttacking && Vision.GetEnemyMain(EnemyMain))
+
+	if (Vision.GetEnemyMain(EnemyMain))
 	{
-		Position Position(EnemyMain);
-		Unit->attack(Position);
-		_bAttacking = true;
+		if (Unit->isIdle())
+		{
+			Position EnemyMainPixel(EnemyMain);
+			if (Unit->getDistance(EnemyMainPixel) < 20)
+			{
+				BWAPI::Unit EnemyUnit = Unit->getClosestUnit(IsEnemy);
+				Unit->attack(EnemyUnit->getPosition());
+			}
+			else
+			{
+				Unit->attack(EnemyMainPixel);
+			}
+		}
 	}
 }
 
@@ -321,6 +335,10 @@ void CTactician::UpdateBuildActions()
 		{
 			AddBuildAction(UnitTypes::Protoss_Pylon);
 		}
+		else if (NeedGateway())
+		{
+			BuildSingleOfType(UnitTypes::Protoss_Gateway);
+		}
 	}
 
 	// Assign probes to build actions
@@ -358,6 +376,12 @@ void CTactician::AddBuildAction(BWAPI::UnitType UnitType)
 	_BuildActions.push_back( std::make_shared<CBuildAction>( UnitType ) );
 }
 
+void CTactician::BuildSingleOfType(BWAPI::UnitType UnitType)
+{
+	if(!HasBuildActionFor(UnitType))
+		AddBuildAction(UnitTypes::Protoss_Gateway);
+}
+
 namespace
 {
 	int GetSupplyThreshold(int SupplyTotal)
@@ -371,6 +395,11 @@ namespace
 		else
 			return 8;
 	}
+}
+
+bool CTactician::NeedGateway()
+{
+	return GetUnallocatedMinerals() > 1000;
 }
 
 bool CTactician::NeedPylon()

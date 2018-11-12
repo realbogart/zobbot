@@ -82,13 +82,16 @@ void CScoutStrategy::UpdateTarget(CAgent* pAgent)
 
 void CAttackClosest::Do(CAgent* pAgent)
 {
+	if (CTactician::GetInstance()->GetAgentManager()._Zealots.size() < 14)
+		return;
+
 	BWAPI::Unit Unit = pAgent->_Unit;
 	const CVision& Vision = CTactician::GetInstance()->GetVision();
 
 	if (Unit->isIdle())
 	{
 		BWAPI::Position Position;
-		if (CTactician::GetInstance()->GetAttackTarget(Position))
+		if (CTactician::GetInstance()->GetRandomAttackTarget(Position))
 		{
 			Unit->attack(Position);
 		}
@@ -270,6 +273,7 @@ void CTactician::Update()
 	SetProbeStrategies();
 	UpdateBuildActions();
 	UpdateScouts();
+	UpdateEnemyBuildings();
 
 	_AgentManager.DoActions();
 
@@ -321,9 +325,13 @@ bool CTactician::CanAffordUnallocated(BWAPI::UnitType UnitType)
 	return Minerals >= UnitType.mineralPrice() && Gas >= UnitType.gasPrice();
 }
 
-bool CTactician::GetAttackTarget(const BWAPI::Position& Position)
+bool CTactician::GetRandomAttackTarget(BWAPI::Position& Position)
 {
-	return false;
+	if (_EnemyBuildings.size() == 0)
+		return false;
+
+	Position = BWAPI::Position(_EnemyBuildings[rand() % _EnemyBuildings.size()]);
+	return true;
 }
 
 void CTactician::UnitCreated(BWAPI::Unit Unit)
@@ -397,7 +405,7 @@ bool CTactician::GetNextExpansion(BWTA::BaseLocation* pFromLocation, BWAPI::Tile
 		};
 
 		if(!pBaseLocation->isIsland())
-			if(!Broodwar->isVisible(Base._Position) || Broodwar->getUnitsOnTile(Base._Position, IsResourceDepot).size() == 0)
+			if(!Broodwar->isVisible(Base._Position) || Broodwar->getUnitsInRadius(BWAPI::Position(Base._Position), 20, IsResourceDepot).size() == 0)
 				Bases.push_back(Base);
 	}
 
@@ -679,6 +687,47 @@ void CTactician::UpdateBases()
 	for (Base Base : _Bases)
 	{
 		Base->Update();
+	}
+}
+
+void CTactician::UpdateEnemyBuildings()
+{
+	for (const BWAPI::Unit& Unit : Broodwar->enemy()->getUnits())
+	{
+		if (Unit->getType().isBuilding())
+		{
+			bool bBuildingExist = false;
+			for (BWAPI::TilePosition TilePosition : _EnemyBuildings)
+			{
+				if (TilePosition == Unit->getTilePosition())
+				{
+					bBuildingExist = true;
+					break;
+				}
+			}
+
+			if (!bBuildingExist)
+			{
+				BWAPI::TilePosition TilePosition(Unit->getTilePosition());
+				//Broodwar->printf("Enemy building at %d, %d", TilePosition.x, TilePosition.y);
+				_EnemyBuildings.push_back(TilePosition);
+			}
+		}
+	}
+
+	auto It = _EnemyBuildings.begin();
+	while (It != _EnemyBuildings.end())
+	{
+		BWAPI::TilePosition TilePosition = *It;
+		if (Broodwar->isVisible(TilePosition) && Broodwar->getUnitsOnTile(TilePosition, IsEnemy && IsBuilding).size() == 0)
+		{
+			//Broodwar->printf("Removed enemy building at %d, %d", TilePosition.x, TilePosition.y);
+			It = _EnemyBuildings.erase(It);
+		}
+		else
+		{
+			++It;
+		}
 	}
 }
 
@@ -1072,23 +1121,17 @@ void CVision::Update()
 	while (It != _UnexploredStartLocations.end())
 	{
 		BWAPI::TilePosition TilePosition = *It;
-		if (Broodwar->isVisible(TilePosition))
+		bool bEnemyBuildingNear = Broodwar->getUnitsInRadius(BWAPI::Position(TilePosition), 200, IsEnemy && IsBuilding).size() > 0;
+		if (Broodwar->isVisible(TilePosition) || bEnemyBuildingNear)
 		{
-			if (Broodwar->getUnitsOnTile(TilePosition, IsEnemy && IsResourceDepot).size() > 0)
+			if (!_bFoundEnemyMain && bEnemyBuildingNear)
 			{
-				if (!_bFoundEnemyMain)
-				{
-					_bFoundEnemyMain = true;
-					_EnemyMainLocation = TilePosition;
-					Broodwar->printf("Enemy found");
-				}
+				_bFoundEnemyMain = true;
+				_EnemyMainLocation = TilePosition;
+				Broodwar->printf("Enemy found");
 			}
-			else
-			{
-				It = _UnexploredStartLocations.erase(It);
-				//Broodwar->sendText("No enemy here");
-				break;
-			}
+
+			It = _UnexploredStartLocations.erase(It);
 		}
 
 		++It;

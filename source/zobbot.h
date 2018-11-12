@@ -257,7 +257,7 @@ public:
 	CZealot(const BWAPI::Unit Unit)
 		: CAgent(Unit)
 	{
-		SetStrategy<CAttackMain>();
+		SetStrategy<CAttackClosest>();
 	}
 };
 
@@ -374,7 +374,7 @@ public:
 	bool CanAffordUnallocated(BWAPI::UnitType UnitType);
 
 	bool IsBuildOrderDone() { return _bBuildOrderDone; }
-	bool GetAttackTarget( const BWAPI::Position& Position );
+	bool GetRandomAttackTarget( BWAPI::Position& Position );
 
 	void UnitCreated(BWAPI::Unit Unit);
 
@@ -398,6 +398,7 @@ private:
 	void SetProbeStrategies();
 	void UpdateBuildActions();
 	void UpdateScouts();
+	void UpdateEnemyBuildings();
 	void AddBuildAction(BWAPI::UnitType UnitType, const BWAPI::TilePosition& TilePosition);
 	void AddBuildAction(BWAPI::UnitType UnitType);
 	void BuildSingleOfType(BWAPI::UnitType UnitType);
@@ -418,6 +419,7 @@ private:
 
 	std::vector<Base> _Bases;
 	std::vector<BuildAction> _BuildActions;
+	std::vector<BWAPI::TilePosition> _EnemyBuildings;
 
 	bool GetNextExpansion(BWTA::BaseLocation* pFromLocation, BWAPI::TilePosition& PositionOut);
 	BWTA::BaseLocation* GetClosestBaseLocation(const BWAPI::Position& Position);

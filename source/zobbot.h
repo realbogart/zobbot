@@ -213,6 +213,12 @@ public:
 	}
 };
 
+class CAttackClosest : public CAgentStrategy<CAgent>
+{
+public:
+	void Do(CAgent* pAgent);
+};
+
 class CZealot : public CAgent
 {
 public:
@@ -346,6 +352,7 @@ public:
 	bool CanAffordUnallocated(BWAPI::UnitType UnitType);
 
 	bool IsBuildOrderDone() { return _bBuildOrderDone; }
+	bool GetAttackTarget( const BWAPI::Position& Position );
 
 	void UnitCreated(BWAPI::Unit Unit);
 

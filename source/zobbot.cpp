@@ -56,7 +56,7 @@ void CScoutStrategy::Do(CAgent* pAgent)
 		UpdateTarget(pAgent);
 
 	const CVision& Vision = CTactician::GetInstance()->GetVision();
-	if (Broodwar->isVisible(_TargetPosition))
+	if (pAgent->_Unit->isIdle() || Broodwar->isVisible(_TargetPosition))
 	{
 		UpdateTarget(pAgent);
 	}
@@ -73,6 +73,25 @@ void CScoutStrategy::UpdateTarget(CAgent* pAgent)
 			BWAPI::Position PixelPosition(_TargetPosition);
 			pAgent->_Unit->move(PixelPosition);
 			_bHasTarget = true;
+		}
+	}
+}
+
+void CAttackClosest::Do(CAgent* pAgent)
+{
+	BWAPI::Unit Unit = pAgent->_Unit;
+	const CVision& Vision = CTactician::GetInstance()->GetVision();
+
+	if (Unit->isIdle())
+	{
+		BWAPI::Position Position;
+		if (CTactician::GetInstance()->GetAttackTarget(Position))
+		{
+			Unit->attack(Position);
+		}
+		else
+		{
+			// Scout target
 		}
 	}
 }
@@ -137,13 +156,14 @@ void CProbe::CBuildStrategy::Do(CProbe* pProbe)
 
 void CZealot::CAttackMain::Do(CZealot* pZealot)
 {
-	if (CTactician::GetInstance()->GetAgentManager()._Zealots.size() < 12)
+	if (CTactician::GetInstance()->GetAgentManager()._Zealots.size() < 14)
 		return;
 
 	BWAPI::Unit Unit = pZealot->_Unit;
+	BWAPI::Unitset Nearby = Unit->getUnitsInRadius(100, IsEnemy);
 	const CVision& Vision = CTactician::GetInstance()->GetVision();
 	BWAPI::TilePosition EnemyMain;
-
+	
 	if (Vision.GetEnemyMain(EnemyMain))
 	{
 		if (Unit->isIdle())
@@ -151,8 +171,9 @@ void CZealot::CAttackMain::Do(CZealot* pZealot)
 			Position EnemyMainPixel(EnemyMain);
 			if (Unit->getDistance(EnemyMainPixel) < 20)
 			{
-				BWAPI::Unit EnemyUnit = Unit->getClosestUnit(IsEnemy);
-				Unit->attack(EnemyUnit->getPosition());
+				BWAPI::Unit EnemyUnit = Unit->getClosestUnit(IsEnemy && !IsFlying && IsVisible);
+				if(Unit->canAttack(EnemyUnit))
+					Unit->attack(EnemyUnit->getPosition());
 			}
 			else
 			{
@@ -256,6 +277,11 @@ bool CTactician::CanAffordUnallocated(BWAPI::UnitType UnitType)
 	return Minerals >= UnitType.mineralPrice() && Gas >= UnitType.gasPrice();
 }
 
+bool CTactician::GetAttackTarget(const BWAPI::Position& Position)
+{
+	return false;
+}
+
 void CTactician::UnitCreated(BWAPI::Unit Unit)
 {
 	for (std::vector<BuildAction>::iterator It = _BuildActions.begin(); It != _BuildActions.end(); ++It) 
@@ -322,7 +348,7 @@ void CTactician::UpdateBuildActions()
 			{
 				if (!_bBuildOrderDone)
 				{
-					Broodwar->sendText("Build order finished!");
+					Broodwar->printf("Build order finished!");
 					_bBuildOrderDone = true;
 				}
 			}
@@ -476,7 +502,7 @@ void CTactician::SetBuildOrder(const char* pName)
 	const SBuildOrder* pBuildOrder = GetBuildOrder( pName );
 	if (pBuildOrder)
 	{
-		Broodwar->sendText("Setting build order '%s'", pBuildOrder->pName);
+		Broodwar->printf("Setting build order '%s'", pBuildOrder->pName);
 		_pBuildOrder = pBuildOrder;
 	}
 }
@@ -800,13 +826,13 @@ bool CBase::HasMineralField()
 CBuildAction::CBuildAction(BWAPI::UnitType UnitType)
 	: _UnitType(UnitType)
 {
-	Broodwar->sendText("Started build action '%s'", _UnitType.getName().c_str());
+	//Broodwar->sendText("Started build action '%s'", _UnitType.getName().c_str());
 	CTactician::GetInstance()->AllocateResourcesForUnitType(_UnitType);
 }
 
 CBuildAction::~CBuildAction()
 {
-	Broodwar->sendText("Finished build action '%s'", _UnitType.getName().c_str());
+	//Broodwar->sendText("Finished build action '%s'", _UnitType.getName().c_str());
 	CTactician::GetInstance()->DeallocateResourcesForUnitType(_UnitType);
 }
 
@@ -852,13 +878,13 @@ void CVision::Update()
 				{
 					_bFoundEnemyMain = true;
 					_EnemyMainLocation = TilePosition;
-					Broodwar->sendText("Enemy found");
+					Broodwar->printf("Enemy found");
 				}
 			}
 			else
 			{
 				It = _UnexploredStartLocations.erase(It);
-				Broodwar->sendText("No enemy here");
+				//Broodwar->sendText("No enemy here");
 				break;
 			}
 		}
@@ -870,7 +896,6 @@ void CVision::Update()
 	{
 		_bFoundEnemyMain = true;
 		_EnemyMainLocation = _UnexploredStartLocations.front();
-		Broodwar->sendText("Deduced enemy location");
+		Broodwar->printf("Deduced enemy location");
 	}
 }
-

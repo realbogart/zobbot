@@ -5,6 +5,11 @@
 using namespace BWAPI;
 using namespace Filter;
 
+CAgent::~CAgent()
+{
+	ResetStrategy();
+}
+
 void CAgent::DoAction()
 {
 	if (_pAgentStrategy)
@@ -29,13 +34,11 @@ bool CAgent::IsActive()
 
 void CAgent::ResetStrategy()
 {
-	delete _pAgentStrategy;
-	_pAgentStrategy = nullptr;
-}
-
-CProbe::CGatherStrategy::CGatherStrategy(Base Base)
-	: _Base( Base )
-{
+	if (_pAgentStrategy)
+	{
+		delete _pAgentStrategy;
+		_pAgentStrategy = nullptr;
+	}
 }
 
 int CScoutStrategy::NumScouts = 0;
@@ -96,6 +99,17 @@ void CAttackClosest::Do(CAgent* pAgent)
 	}
 }
 
+CProbe::CGatherStrategy::CGatherStrategy(Base Base)
+	: _Base(Base)
+{
+	_Base->IncreaseWorkerCount();
+}
+
+CProbe::CGatherStrategy::~CGatherStrategy()
+{
+	_Base->DecreaseWorkerCount();
+}
+
 void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 {
 	BWAPI::Unit Unit = pProbe->_Unit;
@@ -121,10 +135,11 @@ void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 					_bGatherAction = true;
 				}
 			}
-			else if (true)
-			{
-				// Transfer
-			}
+			//else
+			//{
+			//	// Out of minerals
+			//	pProbe->ResetStrategy();
+			//}
 		}
 	}
 }
@@ -202,7 +217,7 @@ void CZealot::CAttackMain::Do(CZealot* pZealot)
 
 void CNexus::CBuildProbe::Do(CNexus* pNexus)
 {
-	if (CTactician::GetInstance()->GetAgentManager()._Probes.size() > 60)
+	if (CTactician::GetInstance()->GetAgentManager()._Probes.size() > 70)
 		return;
 
 	BWAPI::Unit Unit = pNexus->_Unit;
@@ -533,7 +548,7 @@ bool CTactician::NeedExpansion()
 	if (HasBuildActionFor(BWAPI::UnitTypes::Protoss_Nexus))
 		return false;
 
-	if ( _Me->supplyUsed() / 2 > 40 && _AgentManager._Nexuses.size() < 2 ||
+	if ( _Me->supplyUsed() / 2 > 50 && _AgentManager._Nexuses.size() < 2 ||
 		_Me->supplyUsed() / 2 > 80 && _AgentManager._Nexuses.size() < 3 ||
 		_Me->supplyUsed() / 2 > 120)
 	{
@@ -663,7 +678,8 @@ void CTactician::UpdateScouts()
 	if (_Me->supplyUsed() / 2 < 9)
 		return;
 
-	if (CScoutStrategy::NumScouts < 1)
+	BWAPI::TilePosition EnemyBase;
+	if (CScoutStrategy::NumScouts < 1 && !_Vision.GetEnemyMain(EnemyBase))
 	{
 		for (auto It : _AgentManager._Probes)
 		{
@@ -683,19 +699,68 @@ void CTactician::UpdateScouts()
 
 void CTactician::SetProbeStrategies()
 {
-	// Assign gather to all probes that doesn't have a strategy
-	for (auto It : _AgentManager._Probes)
+	// Re-assign gathering strategies
+	int TotalWorkerCount = 0;
+	std::vector<Base> GatheringBases;
+	for (Base Base : _Bases)
 	{
-		Agent<CProbe> Probe = It.second;
-		if (Probe && Probe->IsActive() && !Probe->HasStrategy() )
+		if (Base->HasNexus() && Base->HasMineralField())
 		{
-			Agent<CNexus> Nexus = CAgentManager::AccessClosest( _AgentManager._Nexuses, Probe->_Unit->getPosition() );
-			if (Nexus)
+			GatheringBases.push_back(Base);
+			TotalWorkerCount += Base->GetWorkerCount();
+		}
+	}
+
+	if (GatheringBases.size() > 1)
+	{
+		int WorkersPerBase = TotalWorkerCount / GatheringBases.size();
+		//Broodwar->sendText("Total workers: %d Per base: %d", TotalWorkerCount, WorkersPerBase);
+
+		for (Base Base : GatheringBases)
+		{
+			int ExcessWorkers = Base->GetWorkerCount() - (WorkersPerBase + 2);
+
+			if(ExcessWorkers > 0)
+				Broodwar->sendText("Transferring %d workers", ExcessWorkers);
+
+			for (int i = 0; i < ExcessWorkers; i++)
 			{
-				Probe->SetStrategy<CProbe::CGatherStrategy>(Nexus->GetBase());
+				for (auto It : _AgentManager._Probes)
+				{
+					Agent<CProbe> Probe = It.second;
+					if (Probe && Probe->IsActive() && Probe->HasStrategyType<CProbe::CGatherStrategy>())
+					{
+						CProbe::CGatherStrategy* pGatherStrategy = Probe->AccessStrategy<CProbe::CGatherStrategy>();
+						if (pGatherStrategy->GetBase() == Base)
+						{
+							//Broodwar->sendText("ResetStrategy");
+							Probe->ResetStrategy();
+							break;
+						}
+					}
+				}
 			}
-			else
-				break;
+		}
+	}
+
+	if (GatheringBases.size() > 0)
+	{
+		sort(GatheringBases.begin(), GatheringBases.end(), [](const Base& A, const Base& B) -> bool{return A->GetWorkerCount() < B->GetWorkerCount(); });
+
+		//for (Base Base : GatheringBases)
+		//{
+		//	Broodwar->printf("Base at %d,%d has %d workers", Base->GetPosition().x, Base->GetPosition().y, Base->GetWorkerCount());
+		//}
+
+		// Assign gather to all probes that doesn't have a strategy
+		for (auto It : _AgentManager._Probes)
+		{
+			Agent<CProbe> Probe = It.second;
+			if (Probe && Probe->IsActive() && !Probe->HasStrategy())
+			{
+				//Broodwar->sendText("Assigning gather to base: %d", GatheringBases[0]->GetWorkerCount());
+				Probe->SetStrategy<CProbe::CGatherStrategy>(GatheringBases[0]);
+			}
 		}
 	}
 }

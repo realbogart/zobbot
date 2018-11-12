@@ -23,7 +23,7 @@ public:
 	{
 	}
 
-	virtual ~CAgent() {}
+	virtual ~CAgent();
 
 	void DoAction();
 
@@ -118,6 +118,7 @@ public:
 
 	bool HasNexus();
 	void Update();
+	int MineralFieldsCount() { return _MineralFields.size(); }
 
 	BWAPI::Unit GetMineralField();
 	bool HasMineralField();
@@ -125,11 +126,17 @@ public:
 	BWAPI::Position GetPosition() { return _pBaseLocation->getPosition(); }
 	BWTA::BaseLocation* GetBaseLocation() { return _pBaseLocation; }
 
+	void IncreaseWorkerCount() { _WorkerCount++; }
+	void DecreaseWorkerCount() { _WorkerCount--; }
+
+	int GetWorkerCount() { return _WorkerCount; }
+
 private:
 	std::vector<BWAPI::Unit> _MineralFields;
 	int _CurrentMineralField = 0;
 
 	BWTA::BaseLocation* _pBaseLocation;
+	int _WorkerCount = 0;
 };
 
 using Base = std::shared_ptr<CBase>;
@@ -138,7 +145,7 @@ class CScoutStrategy : public CAgentStrategy<CAgent>
 {
 public:
 	CScoutStrategy();
-	~CScoutStrategy();
+	virtual ~CScoutStrategy();
 
 	void Do(CAgent* pAgent);
 
@@ -157,7 +164,10 @@ public:
 	{
 	public:
 		CGatherStrategy(Base Base);
+		virtual ~CGatherStrategy();
+
 		void Do(CProbe* pProbe);
+		Base GetBase() { return _Base; }
 
 	private:
 		Base _Base;

@@ -100,7 +100,7 @@ void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 {
 	BWAPI::Unit Unit = pProbe->_Unit;
 
-	if (Unit->isIdle() && _Base->HasNexus())
+	if (!_bGatherAction || (Unit->isIdle() && _Base->HasNexus()) )
 	{
 		if (Unit->isCarryingGas() || Unit->isCarryingMinerals())
 		{
@@ -111,10 +111,19 @@ void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 			if (_Base->HasMineralField())
 			{
 				BWAPI::Unit MineralField = _Base->GetMineralField();
+				
 				if (!Unit->gather(MineralField))
 				{
 					Broodwar << Broodwar->getLastError() << std::endl;
 				}
+				else
+				{
+					_bGatherAction = true;
+				}
+			}
+			else if (true)
+			{
+				// Transfer
 			}
 		}
 	}
@@ -136,18 +145,26 @@ void CProbe::CBuildStrategy::Do(CProbe* pProbe)
 	BWAPI::Unit Unit = pProbe->_Unit;
 	BWAPI::UnitType Type = _BuildAction->GetUnitType();
 
-	if (_LastChecked + 20 < Broodwar->getFrameCount() && CTactician::GetInstance()->CanAfford(Type))
+	TilePosition BuildLocation = _BuildAction->HasLocation() ? _BuildAction->GetBuildLocation() : Broodwar->getBuildLocation(Type, Unit->getTilePosition());
+	if (BuildLocation)
 	{
-		_LastChecked = Broodwar->getFrameCount();
-
-		TilePosition BuildLocation = Broodwar->getBuildLocation(Type, Unit->getTilePosition());
-		if (BuildLocation)
+		if (!Broodwar->isVisible(BuildLocation))
 		{
+			if (Unit->isIdle() || Unit->isGatheringMinerals() || Unit->isGatheringGas())
+			{
+				Unit->move(BWAPI::Position(BuildLocation));
+			}
+		}
+		else if (_LastChecked + 20 < Broodwar->getFrameCount() && CTactician::GetInstance()->CanAfford(Type))
+		{
+			_LastChecked = Broodwar->getFrameCount();
+
+			Broodwar->printf(" Building %s at: %d, %d", _BuildAction->GetUnitType().getName().c_str(), BuildLocation.x, BuildLocation.y);
 			Broodwar->registerEvent([BuildLocation, Type](Game*)
 			{
 				Broodwar->drawBoxMap(Position(BuildLocation), Position(BuildLocation + Type.tileSize()), Colors::Blue);
 			}, nullptr, Type.buildTime() + 100);
-		
+
 			_bStartedBuildAction = true;
 			Unit->build(Type, BuildLocation);
 		}
@@ -185,6 +202,9 @@ void CZealot::CAttackMain::Do(CZealot* pZealot)
 
 void CNexus::CBuildProbe::Do(CNexus* pNexus)
 {
+	if (CTactician::GetInstance()->GetAgentManager()._Probes.size() > 60)
+		return;
+
 	BWAPI::Unit Unit = pNexus->_Unit;
 	BWAPI::UnitType WorkerType = Unit->getType().getRace().getWorker();
 	if (Unit->isIdle() && CTactician::GetInstance()->CanAffordUnallocated(WorkerType) && !Unit->train(WorkerType))
@@ -327,6 +347,71 @@ int CTactician::GetUnitTypeCount(BWAPI::UnitType UnitType, bool bCountUnfinished
 	return UnitCount;
 }
 
+bool CTactician::GetNextExpansion(BWTA::BaseLocation* pFromLocation, BWAPI::TilePosition& PositionOut)
+{
+	Broodwar->printf("Searching for next expansion");
+
+	struct SBase
+	{
+		BWAPI::TilePosition _Position;
+
+		double _Distance;
+
+		bool _bStartLocation;
+		bool _bMineralOnly;
+	};
+
+	std::vector<SBase> Bases;
+
+	for (BWTA::BaseLocation* pBaseLocation : BWTA::getBaseLocations())
+	{
+		SBase Base = {
+			pBaseLocation->getTilePosition(),
+			pBaseLocation->getGroundDistance(pFromLocation),
+			pBaseLocation->isStartLocation(),
+			pBaseLocation->isMineralOnly()
+		};
+
+		if(!pBaseLocation->isIsland())
+			if(!Broodwar->isVisible(Base._Position) || Broodwar->getUnitsOnTile(Base._Position, IsResourceDepot).size() == 0)
+				Bases.push_back(Base);
+	}
+
+	if (Bases.size() > 0)
+	{
+		sort(Bases.begin(), Bases.end(), [](const SBase& A, const SBase& B) -> bool
+		{
+			return ((!A._bMineralOnly && B._bMineralOnly) ||
+				((A._bMineralOnly == B._bMineralOnly) && (A._Distance < B._Distance)));
+		});
+
+		PositionOut = Bases.front()._Position;
+		return true;
+	}
+
+	return false;
+}
+
+BWTA::BaseLocation* CTactician::GetClosestBaseLocation(const BWAPI::Position& Position)
+{
+	Broodwar->printf("Searching for base location");
+
+	double MinDistance = DBL_MAX;
+	BWTA::BaseLocation* pClosestBaseLocation = nullptr;
+
+	for (BWTA::BaseLocation* pBaseLocation : BWTA::getBaseLocations())
+	{
+		double Distance = pBaseLocation->getPosition().getDistance(Position);
+		if (Distance < MinDistance)
+		{
+			MinDistance = Distance;
+			pClosestBaseLocation = pBaseLocation;
+		}
+	}
+
+	return pClosestBaseLocation;
+}
+
 void CTactician::UpdateBuildActions()
 {
 	if (_pBuildOrder)
@@ -360,6 +445,16 @@ void CTactician::UpdateBuildActions()
 		if (NeedPylon() && !HasBuildActionFor(UnitTypes::Protoss_Pylon))
 		{
 			AddBuildAction(UnitTypes::Protoss_Pylon);
+		}
+		else if (NeedExpansion())
+		{
+			BWAPI::TilePosition TilePosition;
+			if (GetNextExpansion( _Bases.front()->GetBaseLocation(), TilePosition))
+			{
+				Broodwar->printf("Found expansion location!");
+				AddBuildAction(BWAPI::UnitTypes::Protoss_Nexus, TilePosition);
+			}
+			Broodwar->printf("Time to expand!");
 		}
 		else if (NeedGateway())
 		{
@@ -397,6 +492,11 @@ void CTactician::UpdateBuildActions()
 	}
 }
 
+void CTactician::AddBuildAction(BWAPI::UnitType UnitType, const BWAPI::TilePosition& TilePosition )
+{
+	_BuildActions.push_back( std::make_shared<CBuildAction>( UnitType, TilePosition) );
+}
+
 void CTactician::AddBuildAction(BWAPI::UnitType UnitType)
 {
 	_BuildActions.push_back( std::make_shared<CBuildAction>( UnitType ) );
@@ -417,7 +517,7 @@ namespace
 		else if (SupplyTotal <= 17)
 			return 2;
 		else if (SupplyTotal <= 33)
-			return 4;
+			return 5;
 		else
 			return 8;
 	}
@@ -427,6 +527,22 @@ bool CTactician::NeedGateway()
 {
 	return GetUnallocatedMinerals() > 1000;
 }
+
+bool CTactician::NeedExpansion()
+{
+	if (HasBuildActionFor(BWAPI::UnitTypes::Protoss_Nexus))
+		return false;
+
+	if ( _Me->supplyUsed() / 2 > 40 && _AgentManager._Nexuses.size() < 2 ||
+		_Me->supplyUsed() / 2 > 80 && _AgentManager._Nexuses.size() < 3 ||
+		_Me->supplyUsed() / 2 > 120)
+	{
+		return true;
+	}
+
+	return false;
+}
+
 
 bool CTactician::NeedPylon()
 {
@@ -514,24 +630,24 @@ void CTactician::UpdateBases()
 		Agent<CNexus> Nexus = It.second;
 		if (Nexus && Nexus->IsActive())
 		{
-			bool bExistingBase = false;
-
-			BWAPI::Position Position = Nexus->_Unit->getPosition();
-			for (Base Base : _Bases)
+			if(!Nexus->HasBase())
 			{
-				if (Base->GetPosition() == Position)
+				BWAPI::Position Position = Nexus->_Unit->getPosition();
+				BWTA::BaseLocation* pBaseLocation = GetClosestBaseLocation(Position);
+
+				if (pBaseLocation)
 				{
-					Nexus->SetBase(Base);
-					bExistingBase = true;
-					break;
-				}
-			}
+					BWAPI::TilePosition BaseTilePosition = pBaseLocation->getTilePosition();
+					Broodwar->sendText("Created base at %d, %d", BaseTilePosition.x, BaseTilePosition.y);
 
-			if (!bExistingBase)
-			{
-				Base Base = std::make_shared<CBase>(Position);
-				_Bases.push_back(Base);
-				Nexus->SetBase(Base);
+					Base Base = std::make_shared<CBase>(pBaseLocation);
+					_Bases.push_back(Base);
+					Nexus->SetBase(Base);
+				}
+				else
+				{
+					Broodwar->printf("Error: Could not find BWTA base");
+				}
 			}
 		}
 	}
@@ -655,6 +771,9 @@ void CAgentManager::RefreshAgent(const BWAPI::Unit Unit)
 
 void CZobbot::onStart()
 {
+	// BWTA stuff
+	BWTA::analyze();
+
 	Broodwar->sendText("*static voice*: ZOBOOT ACTIVATEEED");
 	Broodwar << "The map is " << Broodwar->mapName() << "!" << std::endl;
 	Broodwar->enableFlag(Flag::UserInput);
@@ -797,7 +916,7 @@ void CZobbot::onUnitComplete(BWAPI::Unit unit)
 
 bool CBase::HasNexus()
 {
-	BWAPI::Unitset Units = Broodwar->getUnitsInRadius( _NexusPosition, 10, IsResourceDepot && IsOwned );
+	BWAPI::Unitset Units = Broodwar->getUnitsInRadius( GetPosition(), 10, IsResourceDepot && IsOwned && !IsBeingConstructed );
 	return Units.size() > 0;
 }
 
@@ -805,7 +924,7 @@ void CBase::Update()
 {
 	_MineralFields.clear();
 
-	BWAPI::Unitset MineralFields = Broodwar->getUnitsInRadius(_NexusPosition, 300, IsMineralField);
+	BWAPI::Unitset MineralFields = Broodwar->getUnitsInRadius(GetPosition(), 300, IsMineralField);
 	for (const BWAPI::Unit& Unit : MineralFields)
 	{
 		_MineralFields.push_back(Unit);
@@ -823,8 +942,17 @@ bool CBase::HasMineralField()
 	return _MineralFields.size() > 0;
 }
 
+CBuildAction::CBuildAction(BWAPI::UnitType UnitType, const BWAPI::TilePosition& TilePosition)
+	: _UnitType(UnitType)
+	, _TilePosition(TilePosition)
+	, _bHasLocation(true)
+{
+	CTactician::GetInstance()->AllocateResourcesForUnitType(_UnitType);
+}
+
 CBuildAction::CBuildAction(BWAPI::UnitType UnitType)
 	: _UnitType(UnitType)
+	, _bHasLocation(false)
 {
 	//Broodwar->sendText("Started build action '%s'", _UnitType.getName().c_str());
 	CTactician::GetInstance()->AllocateResourcesForUnitType(_UnitType);

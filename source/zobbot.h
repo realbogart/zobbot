@@ -1,5 +1,7 @@
 #pragma once
 #include <BWAPI.h>
+#include <BWTA.h>
+
 #include <vector>
 
 #include "buildorders.h"
@@ -84,6 +86,7 @@ public:
 class CBuildAction
 {
 public:
+	CBuildAction(BWAPI::UnitType UnitType, const BWAPI::TilePosition& TilePosition);
 	CBuildAction(BWAPI::UnitType UnitType);
 	~CBuildAction();
 
@@ -91,10 +94,16 @@ public:
 
 	void SetCompleted(bool bCompleted) { _bCompleted = bCompleted; }
 	bool IsCompleted() { return _bCompleted; }
+	bool HasLocation() { return _bHasLocation; }
+
+	BWAPI::TilePosition GetBuildLocation() { return _TilePosition; }
 
 private:
 	BWAPI::UnitType _UnitType;
+	BWAPI::TilePosition _TilePosition;
+
 	bool _bCompleted = false;
+	bool _bHasLocation = false;
 };
 
 using BuildAction = std::shared_ptr<CBuildAction>;
@@ -102,8 +111,8 @@ using BuildAction = std::shared_ptr<CBuildAction>;
 class CBase
 {
 public:
-	CBase(BWAPI::Position NexusPosition)
-		: _NexusPosition(NexusPosition)
+	CBase(BWTA::BaseLocation* pBaseLocation)
+		: _pBaseLocation(pBaseLocation)
 	{
 	}
 
@@ -113,13 +122,14 @@ public:
 	BWAPI::Unit GetMineralField();
 	bool HasMineralField();
 
-	BWAPI::Position GetPosition() { return _NexusPosition; }
+	BWAPI::Position GetPosition() { return _pBaseLocation->getPosition(); }
+	BWTA::BaseLocation* GetBaseLocation() { return _pBaseLocation; }
 
 private:
 	std::vector<BWAPI::Unit> _MineralFields;
 	int _CurrentMineralField = 0;
 
-	BWAPI::Position _NexusPosition;
+	BWTA::BaseLocation* _pBaseLocation;
 };
 
 using Base = std::shared_ptr<CBase>;
@@ -151,6 +161,7 @@ public:
 
 	private:
 		Base _Base;
+		bool _bGatherAction = false;
 	};
 
 	class CBuildStrategy : public CAgentStrategy<CProbe>
@@ -376,9 +387,11 @@ private:
 	void SetProbeStrategies();
 	void UpdateBuildActions();
 	void UpdateScouts();
+	void AddBuildAction(BWAPI::UnitType UnitType, const BWAPI::TilePosition& TilePosition);
 	void AddBuildAction(BWAPI::UnitType UnitType);
 	void BuildSingleOfType(BWAPI::UnitType UnitType);
 	bool NeedGateway();
+	bool NeedExpansion();
 	bool NeedPylon();
 	int CountBuildActionFor(BWAPI::UnitType UnitType);
 	bool HasBuildActionFor(BWAPI::UnitType UnitType);
@@ -394,6 +407,9 @@ private:
 
 	std::vector<Base> _Bases;
 	std::vector<BuildAction> _BuildActions;
+
+	bool GetNextExpansion(BWTA::BaseLocation* pFromLocation, BWAPI::TilePosition& PositionOut);
+	BWTA::BaseLocation* GetClosestBaseLocation(const BWAPI::Position& Position);
 };
 
 class CZobbot : public BWAPI::AIModule

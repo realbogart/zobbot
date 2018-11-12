@@ -187,6 +187,7 @@ public:
 		BuildAction _BuildAction;
 		bool _bStartedBuildAction = false;
 		int _LastChecked = 0;
+		int _StartedAction = 0;
 	};
 
 	CProbe(const BWAPI::Unit Unit)

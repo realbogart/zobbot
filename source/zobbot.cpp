@@ -59,7 +59,7 @@ void CScoutStrategy::Do(CAgent* pAgent)
 		UpdateTarget(pAgent);
 
 	const CVision& Vision = CTactician::GetInstance()->GetVision();
-	if (pAgent->_Unit->isIdle() || Broodwar->isVisible(_TargetPosition))
+	if (Broodwar->isVisible(_TargetPosition))
 	{
 		UpdateTarget(pAgent);
 	}
@@ -71,7 +71,7 @@ void CScoutStrategy::UpdateTarget(CAgent* pAgent)
 	const CVision& Vision = CTactician::GetInstance()->GetVision();
 	if (Vision.GetEnemyMain(_TargetPosition) || Vision.GetUnexploredStartLocation(_TargetPosition))
 	{
-		if (_TargetPosition != OldTarget)
+		if (pAgent->_Unit->isIdle() || _TargetPosition != OldTarget)
 		{
 			BWAPI::Position PixelPosition(_TargetPosition);
 			pAgent->_Unit->move(PixelPosition);
@@ -135,11 +135,11 @@ void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 					_bGatherAction = true;
 				}
 			}
-			//else
-			//{
-			//	// Out of minerals
-			//	pProbe->ResetStrategy();
-			//}
+			else
+			{
+				// Out of minerals
+				pProbe->ResetStrategy();
+			}
 		}
 	}
 }
@@ -147,6 +147,7 @@ void CProbe::CGatherStrategy::Do(CProbe* pProbe)
 CProbe::CBuildStrategy::CBuildStrategy(BuildAction BuildAction)
 	: _BuildAction(BuildAction)
 {
+	_StartedAction = Broodwar->getFrameCount();
 }
 
 void CProbe::CBuildStrategy::Do(CProbe* pProbe)
@@ -158,6 +159,14 @@ void CProbe::CBuildStrategy::Do(CProbe* pProbe)
 	}
 
 	BWAPI::Unit Unit = pProbe->_Unit;
+	if (_StartedAction + 1000 < Broodwar->getFrameCount())
+	{
+		pProbe->ResetStrategy();
+		Unit->stop();
+		Broodwar->printf("Build action cancelled");
+		return;
+	}
+
 	BWAPI::UnitType Type = _BuildAction->GetUnitType();
 
 	TilePosition BuildLocation = _BuildAction->HasLocation() ? _BuildAction->GetBuildLocation() : Broodwar->getBuildLocation(Type, Unit->getTilePosition());
@@ -561,7 +570,7 @@ bool CTactician::NeedExpansion()
 
 bool CTactician::NeedPylon()
 {
-	if (_Me->supplyTotal() == 200)
+	if (_Me->supplyTotal() / 2 >= 200)
 	{
 		return false;
 	}
@@ -653,7 +662,7 @@ void CTactician::UpdateBases()
 				if (pBaseLocation)
 				{
 					BWAPI::TilePosition BaseTilePosition = pBaseLocation->getTilePosition();
-					Broodwar->sendText("Created base at %d, %d", BaseTilePosition.x, BaseTilePosition.y);
+					Broodwar->printf("Created base at %d, %d", BaseTilePosition.x, BaseTilePosition.y);
 
 					Base Base = std::make_shared<CBase>(pBaseLocation);
 					_Bases.push_back(Base);
@@ -721,7 +730,7 @@ void CTactician::SetProbeStrategies()
 			int ExcessWorkers = Base->GetWorkerCount() - (WorkersPerBase + 2);
 
 			if(ExcessWorkers > 0)
-				Broodwar->sendText("Transferring %d workers", ExcessWorkers);
+				Broodwar->printf("Transferring %d workers", ExcessWorkers);
 
 			for (int i = 0; i < ExcessWorkers; i++)
 			{

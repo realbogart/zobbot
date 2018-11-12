@@ -692,7 +692,7 @@ void CTactician::UpdateBases()
 
 void CTactician::UpdateEnemyBuildings()
 {
-	for (const BWAPI::Unit& Unit : Broodwar->enemy()->getUnits())
+	for (BWAPI::Unit Unit : Broodwar->enemy()->getUnits())
 	{
 		if (Unit->getType().isBuilding())
 		{
@@ -705,7 +705,7 @@ void CTactician::UpdateEnemyBuildings()
 					break;
 				}
 			}
-
+	
 			if (!bBuildingExist)
 			{
 				BWAPI::TilePosition TilePosition(Unit->getTilePosition());
@@ -714,7 +714,7 @@ void CTactician::UpdateEnemyBuildings()
 			}
 		}
 	}
-
+	
 	auto It = _EnemyBuildings.begin();
 	while (It != _EnemyBuildings.end())
 	{
